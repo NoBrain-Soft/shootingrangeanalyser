@@ -1,0 +1,366 @@
+package com.nobrainsoft.rangeanalyser.vision.live
+
+import com.nobrainsoft.rangeanalyser.core.geometry.PointMm
+import com.nobrainsoft.rangeanalyser.core.model.Calibers
+import com.nobrainsoft.rangeanalyser.core.target.TargetLibrary
+import com.nobrainsoft.rangeanalyser.vision.SyntheticTarget
+import com.nobrainsoft.rangeanalyser.vision.TestOpenCv
+import com.nobrainsoft.rangeanalyser.vision.geometry.Transform2d
+import org.junit.Before
+import org.junit.Test
+import org.opencv.core.Core
+import org.opencv.core.CvType
+import org.opencv.core.Mat
+import org.opencv.core.Point
+import org.opencv.core.Scalar
+import org.opencv.imgproc.Imgproc
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+class ShotWatcherTest {
+
+    @Before
+    fun setUp() = TestOpenCv.ensureLoaded()
+
+    private val target = TargetLibrary.ISSF_PISTOL_25M
+    private val caliber = Calibers.P_45
+    private val pixelsPerMm = 3.0
+
+    // --- Detecting shots --------------------------------------------------------------------------
+
+    @Test
+    fun `a new hole is reported once, after enough frames to be sure`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        // The same new hole on several frames running.
+        val shot = PointMm(30.0, 40.0)
+        val outcomes = (1..5).map { frame -> session.feed(listOf(shot), timestampMs = frame * 100L) }
+
+        // Nothing on the first frames: one blip is not a shot.
+        assertTrue(
+            outcomes.take(2).all { it is FrameOutcome.Watching },
+            "should wait for confirmation, got ${outcomes.take(2)}",
+        )
+
+        val reports = outcomes.filterIsInstance<FrameOutcome.Shots>()
+        assertEquals(1, reports.size, "the same hole must not be announced twice")
+        assertEquals(1, reports.single().shots.size)
+
+        val found = reports.single().shots.single()
+        assertEquals(shot.x, found.positionMm.x, 4.0)
+        assertEquals(shot.y, found.positionMm.y, 4.0)
+        session.release()
+    }
+
+    @Test
+    fun `shots are reported in the order they arrive`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        val first = PointMm(-40.0, 20.0)
+        val second = PointMm(50.0, -30.0)
+        val reported = mutableListOf<LiveShot>()
+
+        repeat(5) { frame -> session.collect(listOf(first), frame * 100L, reported) }
+        repeat(5) { frame -> session.collect(listOf(first, second), 500L + frame * 100L, reported) }
+
+        assertEquals(2, reported.size, "expected exactly two shots, got ${reported.map { it.positionMm }}")
+        assertEquals(first.x, reported[0].positionMm.x, 4.0)
+        assertEquals(second.x, reported[1].positionMm.x, 4.0)
+        assertTrue(reported[0].timestampMs < reported[1].timestampMs)
+        session.release()
+    }
+
+    @Test
+    fun `an already-present hole is not announced`() {
+        // Arming on a target that has been shot before must not report the existing holes.
+        val session = session()
+        val existing = listOf(PointMm(10.0, 10.0), PointMm(-20.0, 30.0))
+        session.armWith(existing)
+
+        val outcomes = (1..6).map { frame -> session.feed(existing, frame * 100L) }
+        assertTrue(
+            outcomes.none { it is FrameOutcome.Shots },
+            "holes that were already there are not new shots",
+        )
+        session.release()
+    }
+
+    @Test
+    fun `a still target produces nothing at all`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        val outcomes = (1..10).map { frame -> session.feed(emptyList(), frame * 100L) }
+        assertTrue(outcomes.all { it is FrameOutcome.Watching }, "got $outcomes")
+        session.release()
+    }
+
+    // --- Coping with a real range -----------------------------------------------------------------
+
+    @Test
+    fun `camera drift is compensated`() {
+        // A phone on a cheap tripod wanders. Without alignment every frame reads as a total change.
+        val session = session()
+        session.armWith(emptyList())
+
+        val shot = PointMm(25.0, -35.0)
+        val reported = mutableListOf<LiveShot>()
+        repeat(6) { frame ->
+            session.collect(
+                holes = listOf(shot),
+                timestampMs = frame * 100L,
+                into = reported,
+                // Creeping a few pixels further each frame.
+                shiftPx = Point(frame * 1.5, frame * -1.0),
+            )
+        }
+
+        assertEquals(1, reported.size, "drift should not hide the shot, nor invent extras")
+        assertEquals(shot.x, reported.single().positionMm.x, 5.0)
+        session.release()
+    }
+
+    @Test
+    fun `somebody walking downrange does not become a shot`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        // A large dark shape crosses the frame for a few frames, then leaves.
+        val outcomes = (1..4).map { frame ->
+            session.feed(emptyList(), frame * 100L, occlusion = true)
+        } + (5..8).map { frame -> session.feed(emptyList(), frame * 100L) }
+
+        assertTrue(
+            outcomes.none { it is FrameOutcome.Shots },
+            "an occlusion must never register as a hit",
+        )
+        assertTrue(
+            outcomes.take(4).all { it is FrameOutcome.Skipped },
+            "the occluded frames should be discarded, got ${outcomes.take(4)}",
+        )
+        session.release()
+    }
+
+    @Test
+    fun `a genuine shot is still caught after an interruption`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        repeat(3) { frame -> session.feed(emptyList(), frame * 100L, occlusion = true) }
+
+        val shot = PointMm(-30.0, -30.0)
+        val reported = mutableListOf<LiveShot>()
+        repeat(5) { frame -> session.collect(listOf(shot), 400L + frame * 100L, reported) }
+
+        assertEquals(1, reported.size, "the watcher must recover once the view clears")
+        session.release()
+    }
+
+    @Test
+    fun `replacing the target is recognised as such`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        // The whole frame changes, and keeps being different.
+        val outcomes = (1..8).map { frame ->
+            session.feed(emptyList(), frame * 100L, wholesaleChange = true)
+        }
+
+        assertTrue(
+            outcomes.any { it is FrameOutcome.TargetChanged },
+            "a completely different picture should prompt a new target, got $outcomes",
+        )
+        session.release()
+    }
+
+    @Test
+    fun `frames before arming are refused rather than guessed at`() {
+        val watcher = ShotWatcher(Transform2d.IDENTITY, caliber)
+        val frame = Mat(100, 100, CvType.CV_8UC1, Scalar(255.0))
+
+        val outcome = watcher.onFrame(frame, 0L)
+        assertEquals(FrameOutcome.Skipped(SkipReason.NOT_ARMED), outcome)
+        frame.release()
+    }
+
+    @Test
+    fun `the shot count tracks confirmations`() {
+        val session = session()
+        session.armWith(emptyList())
+        assertEquals(0, session.watcher.confirmedCount)
+
+        val reported = mutableListOf<LiveShot>()
+        repeat(5) { frame -> session.collect(listOf(PointMm(0.0, 20.0)), frame * 100L, reported) }
+
+        assertEquals(1, session.watcher.confirmedCount)
+        session.release()
+    }
+
+    // --- Feasibility ------------------------------------------------------------------------------
+
+    @Test
+    fun `a close target with a big calibre is fine`() {
+        val assessment = LiveFeasibility.assess(
+            caliber = Calibers.P_45,
+            distanceM = 10.0,
+            focalLengthMm = 26.0,
+            pixelPitchMm = 0.0014,
+            zoomRatio = 1.0,
+        )
+        assertEquals(LiveFeasibility.Verdict.GOOD, assessment.verdict)
+    }
+
+    @Test
+    fun `a small calibre at distance is called out as unworkable`() {
+        // A .223 hole at 200 m through a phone lens is a couple of pixels. Saying so beforehand is
+        // worth far more than silently detecting nothing.
+        val assessment = LiveFeasibility.assess(
+            caliber = Calibers.R_223,
+            distanceM = 200.0,
+            focalLengthMm = 26.0,
+            pixelPitchMm = 0.0014,
+            zoomRatio = 1.0,
+        )
+        assertEquals(LiveFeasibility.Verdict.UNRELIABLE, assessment.verdict)
+        assertTrue(assessment.holeDiameterPx < 6.0)
+    }
+
+    @Test
+    fun `zoom is suggested when it would actually help`() {
+        val assessment = LiveFeasibility.assess(
+            caliber = Calibers.RF_22_LR,
+            distanceM = 50.0,
+            focalLengthMm = 26.0,
+            pixelPitchMm = 0.0014,
+            zoomRatio = 1.0,
+            maximumZoomRatio = 10.0,
+        )
+        val zoom = assertNotNull(assessment.suggestedZoomRatio, "should suggest zooming in")
+        assertTrue(zoom > 1.0 && zoom <= 10.0)
+    }
+
+    @Test
+    fun `no zoom is suggested when the camera cannot reach it`() {
+        val assessment = LiveFeasibility.assess(
+            caliber = Calibers.AIR_177,
+            distanceM = 300.0,
+            focalLengthMm = 26.0,
+            pixelPitchMm = 0.0014,
+            zoomRatio = 1.0,
+            maximumZoomRatio = 5.0,
+        )
+        assertEquals(LiveFeasibility.Verdict.UNRELIABLE, assessment.verdict)
+        assertEquals(null, assessment.suggestedZoomRatio)
+    }
+
+    // --- Fixture ----------------------------------------------------------------------------------
+
+    private fun session() = WatchSession(target, caliber, pixelsPerMm)
+
+    /** Builds frames of a target being shot, and drives a watcher with them. */
+    private class WatchSession(
+        val spec: com.nobrainsoft.rangeanalyser.core.target.TargetSpec,
+        val caliber: com.nobrainsoft.rangeanalyser.core.model.Caliber,
+        val pixelsPerMm: Double,
+    ) {
+        lateinit var watcher: ShotWatcher
+        private val frames = mutableListOf<Mat>()
+
+        private fun render(holes: List<PointMm>): Mat {
+            val rendered = SyntheticTarget.render(
+                spec,
+                SyntheticTarget.Config(
+                    pixelsPerMm = pixelsPerMm,
+                    holes = holes.map { SyntheticTarget.Hole(it, caliber.bulletDiameterMm) },
+                    noiseSigma = 2.0,
+                ),
+            )
+            val image = rendered.image
+            if (!::watcher.isInitialized) {
+                watcher = ShotWatcher(rendered.imageToTargetMm, caliber)
+            }
+            frames += image
+            return image
+        }
+
+        fun armWith(holes: List<PointMm>) {
+            // render() builds the watcher on first call, since it is what knows the true transform.
+            val frame = render(holes)
+            watcher.arm(frame)
+        }
+
+        fun feed(
+            holes: List<PointMm>,
+            timestampMs: Long,
+            shiftPx: Point = Point(0.0, 0.0),
+            occlusion: Boolean = false,
+            wholesaleChange: Boolean = false,
+        ): FrameOutcome {
+            var frame = render(holes)
+            if (shiftPx.x != 0.0 || shiftPx.y != 0.0) {
+                frame = shifted(frame, shiftPx)
+                frames += frame
+            }
+            if (occlusion) {
+                frame = frame.clone()
+                // A person-sized dark shape across a third of the frame.
+                Imgproc.rectangle(
+                    frame,
+                    Point(frame.cols() * 0.25, 0.0),
+                    Point(frame.cols() * 0.6, frame.rows().toDouble()),
+                    Scalar(40.0),
+                    -1,
+                )
+                frames += frame
+            }
+            if (wholesaleChange) {
+                frame = Mat(frame.rows(), frame.cols(), CvType.CV_8UC1, Scalar(90.0))
+                Imgproc.circle(
+                    frame,
+                    Point(frame.cols() / 3.0, frame.rows() / 3.0),
+                    frame.cols() / 5,
+                    Scalar(220.0),
+                    -1,
+                )
+                frames += frame
+            }
+            return watcher.onFrame(frame, timestampMs)
+        }
+
+        fun collect(
+            holes: List<PointMm>,
+            timestampMs: Long,
+            into: MutableList<LiveShot>,
+            shiftPx: Point = Point(0.0, 0.0),
+        ) {
+            val outcome = feed(holes, timestampMs, shiftPx)
+            if (outcome is FrameOutcome.Shots) into += outcome.shots
+        }
+
+        private fun shifted(source: Mat, by: Point): Mat {
+            val matrix = Mat(2, 3, CvType.CV_64F)
+            matrix.put(0, 0, 1.0, 0.0, by.x, 0.0, 1.0, by.y)
+            val result = Mat()
+            Imgproc.warpAffine(
+                source,
+                result,
+                matrix,
+                source.size(),
+                Imgproc.INTER_LINEAR,
+                Core.BORDER_REPLICATE,
+                Scalar(255.0),
+            )
+            matrix.release()
+            return result
+        }
+
+        fun release() {
+            frames.forEach { it.release() }
+            frames.clear()
+            watcher.reset()
+        }
+    }
+}
