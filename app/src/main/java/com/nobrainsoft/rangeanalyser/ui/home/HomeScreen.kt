@@ -1,3 +1,7 @@
+// TopAppBar is still @ExperimentalMaterial3Api in Material3 1.3. Opted in at file level
+// rather than per function: every top-level screen here has an app bar.
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.nobrainsoft.rangeanalyser.ui.home
 
 import androidx.compose.foundation.clickable
@@ -18,11 +22,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -70,7 +75,7 @@ fun HomeScreen(
                 title = { Text("Range Analyser") },
                 actions = {
                     IconButton(onClick = onOpenProgress, modifier = Modifier.width(Dimens.touchTarget)) {
-                        Icon(Icons.Default.ShowChart, contentDescription = "Progress")
+                        Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = "Progress")
                     }
                     IconButton(onClick = onOpenHistory, modifier = Modifier.width(Dimens.touchTarget)) {
                         Icon(Icons.Default.History, contentDescription = "History")

@@ -63,6 +63,9 @@ export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64   # or org.gradle.java.home 
 ./gradlew :core:test :vision:test    # the analysis engine - 177 tests
 ./gradlew :app:assembleDebug         # the app; needs an Android SDK
 ./gradlew :app:installDebug          # build and push to a device over adb
+
+./gradlew :core:jar :vision:jar && ./gradlew -p tools/typecheck compileKotlin
+                                     # type-check :app without an SDK - see tools/typecheck
 ```
 
 `settings.gradle.kts` includes `:app` only when an Android SDK is present (`ANDROID_HOME`, or
@@ -86,14 +89,18 @@ false-positive rate by Monte Carlo, ballistics validated against published veloc
 time-of-flight figures, and detection run against synthetically rendered targets with perspective,
 blur, noise and uneven lighting.
 
-**The `:app` module has never been compiled.** It was written in an environment where Google's Maven
-repository is unreachable, so the Android Gradle Plugin, Compose and CameraX could not be resolved.
-Everything in `:app` is deliberately logic-free — it is camera plumbing, screens and persistence over
-an engine that is tested — so expect build fixes there to be mechanical rather than conceptual.
+**The `:app` module has never been assembled**, only type-checked. It was written in an environment
+where Google's Maven repository is unreachable, so AGP, Compose, CameraX and Room cannot be
+resolved there and `./gradlew :app:assembleDebug` cannot run at all.
 
-What was checked statically in place of compiling: every `:core`/`:vision` symbol the app imports
-resolves, no module-internal symbol is referenced across the module boundary, and Compose imports
-match their usages.
+What *has* run is `tools/typecheck`, which compiles the whole `:app` source tree against Compose
+Multiplatform's Maven Central artifacts plus a set of stubs for the Android surface. It currently
+passes with no errors and no warnings. That covers type errors, unresolved references and missing
+opt-ins across all ~7,500 lines; it does not cover AGP, Room's generated code, or anything at
+runtime. Its README is specific about the difference, and worth reading before trusting a clean run.
+
+Everything in `:app` is deliberately logic-free — camera plumbing, screens and persistence over an
+engine that is tested — so expect any remaining build fixes to be mechanical rather than conceptual.
 
 When you first open it in Android Studio, three manual checks are worth doing in order:
 

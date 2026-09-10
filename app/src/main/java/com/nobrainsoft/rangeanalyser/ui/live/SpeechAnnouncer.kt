@@ -22,7 +22,8 @@ class SpeechAnnouncer(context: Context) {
     init {
         engine = TextToSpeech(context.applicationContext) { status ->
             ready = status == TextToSpeech.SUCCESS
-            if (ready) engine?.language = Locale.getDefault()
+            // setLanguage returns an int status, so Kotlin exposes no `language` setter.
+            if (ready) engine?.setLanguage(Locale.getDefault())
         }
     }
 

@@ -1,3 +1,7 @@
+// TopAppBar is still @ExperimentalMaterial3Api in Material3 1.3. Opted in at file level
+// rather than per function: every top-level screen here has an app bar.
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.nobrainsoft.rangeanalyser.ui.photo
 
 import android.content.Context
@@ -17,10 +21,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -180,7 +185,7 @@ private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, o
                     .fillMaxWidth()
                     .heightIn(min = Dimens.touchTargetRange),
             ) {
-                Icon(Icons.Default.OpenInNew, contentDescription = null)
+                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
                 Text("Choose an existing photo", modifier = Modifier.padding(start = 8.dp))
             }
 
@@ -221,7 +226,7 @@ private fun ReviewStep(
                             onClick = viewModel::undo,
                             modifier = Modifier.heightIn(min = Dimens.touchTargetRange),
                         ) {
-                            Icon(Icons.Default.Undo, contentDescription = "Undo")
+                            Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
                         }
                     }
                     if (state.selectedShotId != null) {
