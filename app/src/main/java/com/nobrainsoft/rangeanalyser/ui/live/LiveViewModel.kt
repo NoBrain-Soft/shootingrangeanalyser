@@ -23,6 +23,8 @@ import com.nobrainsoft.rangeanalyser.vision.live.SkipReason
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.opencv.core.Mat
 import org.opencv.core.Point
@@ -41,6 +43,8 @@ data class LiveState(
     val calibrated: Boolean = false,
     val skipped: SkipReason? = null,
     val targetChanged: Boolean = false,
+    /** The face being scored against, which can be swapped without leaving the session. */
+    val spec: TargetSpec? = null,
 ) {
     val shotCount: Int get() = shots.count { !it.excluded }
 }
@@ -80,6 +84,7 @@ class LiveViewModel(
         this.caliber = caliber
         this.speech = speech
         this.scorer = Scorer(spec, caliber)
+        _state.value = _state.value.copy(spec = spec)
 
         // A saved calibration means the shooter can arm immediately; otherwise the first frame is
         // used to work out the scale.
@@ -207,6 +212,52 @@ class LiveViewModel(
             shots = shots,
             stats = statsFor(shots),
             totalScore = totalFor(shots),
+        )
+    }
+
+    /** Every target face on the phone, so one can be swapped in without leaving the firing point. */
+    val targets: StateFlow<List<TargetSpec>> = repository.observeTargets()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** The face currently being scored against. */
+    val currentSpec: TargetSpec? get() = spec
+
+    /**
+     * Swaps the target face mid-session.
+     *
+     * Walking back to the car to edit a setup because the club put up a different face is the sort
+     * of thing that makes an app get deleted. The calibration goes with it - the new face is a
+     * different size, so the old scale is not merely stale but wrong.
+     */
+    fun changeTarget(replacement: TargetSpec) {
+        spec = replacement
+        scorer = Scorer(replacement, caliber)
+        recalibrate()
+        _state.value = _state.value.copy(
+            spec = replacement,
+            status = "Now scoring against ${replacement.name}. Reading the target...",
+        )
+    }
+
+    /**
+     * Throws away the calibration and measures again from the next frame.
+     *
+     * Wanted whenever the camera has been moved, the zoom changed, or the first automatic attempt
+     * simply locked onto the wrong thing.
+     */
+    fun recalibrate() {
+        watcher?.reset()
+        watcher = null
+        pendingArm = false
+        _state.value = _state.value.copy(
+            armed = false,
+            calibrated = false,
+            shots = emptyList(),
+            stats = null,
+            totalScore = "",
+            lastCall = "",
+            targetChanged = false,
+            status = "Measuring the target again...",
         )
     }
 

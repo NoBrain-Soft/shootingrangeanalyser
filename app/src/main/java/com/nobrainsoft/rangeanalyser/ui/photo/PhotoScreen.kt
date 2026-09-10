@@ -5,8 +5,6 @@
 package com.nobrainsoft.rangeanalyser.ui.photo
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -50,7 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nobrainsoft.rangeanalyser.appContainer
-import com.nobrainsoft.rangeanalyser.camera.ImageBridge
+import com.nobrainsoft.rangeanalyser.camera.PhotoLoader
 import com.nobrainsoft.rangeanalyser.core.model.Caliber
 import com.nobrainsoft.rangeanalyser.core.model.Profile
 import com.nobrainsoft.rangeanalyser.core.target.TargetSpec
@@ -64,9 +62,7 @@ import com.nobrainsoft.rangeanalyser.ui.rangeViewModel
 import com.nobrainsoft.rangeanalyser.ui.theme.Dimens
 import com.nobrainsoft.rangeanalyser.ui.theme.ScoreColors
 import java.io.File
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Photo analysis, end to end.
@@ -156,37 +152,11 @@ private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, o
         busy = true
         failure = null
         scope.launch {
-            val outcome = withContext(Dispatchers.Default) {
-                runCatching {
-                    val bitmap = decode(context, uri)
-                        ?: error("That picture could not be read.")
-                    try {
-                        ImageBridge.greyscaleOf(bitmap)
-                    } finally {
-                        bitmap.recycle()
-                    }
-                }
-            }
+            val outcome = PhotoLoader.loadGreyscale(context, uri)
             busy = false
             outcome
-                .onSuccess { image ->
-                    if (image.empty()) {
-                        image.release()
-                        failure = "That picture came through empty. Try taking it again."
-                    } else {
-                        onImage(image)
-                    }
-                }
-                .onFailure { thrown ->
-                    Log.w("RangeAnalyser", "could not load the target photograph", thrown)
-                    failure = when (thrown) {
-                        is OutOfMemoryError ->
-                            "That photograph is too large for this device to open."
-                        else ->
-                            thrown.message?.takeIf { it.isNotBlank() }
-                                ?: "That picture could not be read."
-                    }
-                }
+                .onSuccess { onImage(it) }
+                .onFailure { failure = PhotoLoader.reasonFor(it) }
         }
     }
 
@@ -413,38 +383,3 @@ private fun Busy(message: String) {
     }
 }
 
-/**
- * Loads a photograph at a workable size.
- *
- * Full-resolution phone photographs are far larger than detection needs, and rectifying one costs
- * memory for no gain: the rectifier resamples to a fixed pixels-per-millimetre anyway.
- */
-private fun decode(context: Context, uri: Uri): Bitmap? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    context.contentResolver.openInputStream(uri)?.use {
-        BitmapFactory.decodeStream(it, null, bounds)
-    }
-
-    // A failed bounds pass leaves these at zero, and the loop below would then never subsample -
-    // handing a full-resolution phone photograph to the decoder and running the heap out.
-    val width = bounds.outWidth
-    val height = bounds.outHeight
-    if (width <= 0 || height <= 0) return null
-
-    var sample = 1
-    while (width / sample > MAX_DIMENSION || height / sample > MAX_DIMENSION) {
-        sample *= 2
-    }
-
-    val options = BitmapFactory.Options().apply {
-        inSampleSize = sample
-        // OpenCV needs a readable configuration; without this a modern gallery can hand back a
-        // hardware bitmap whose pixels cannot be addressed at all.
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-    }
-    return context.contentResolver.openInputStream(uri)?.use {
-        BitmapFactory.decodeStream(it, null, options)
-    }
-}
-
-private const val MAX_DIMENSION = 2400

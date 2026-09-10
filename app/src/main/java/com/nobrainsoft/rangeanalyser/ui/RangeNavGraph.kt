@@ -27,6 +27,7 @@ import com.nobrainsoft.rangeanalyser.ui.history.ProgressScreen
 import com.nobrainsoft.rangeanalyser.ui.home.HomeScreen
 import com.nobrainsoft.rangeanalyser.ui.library.AmmoEditorScreen
 import com.nobrainsoft.rangeanalyser.ui.library.AmmoLibraryScreen
+import com.nobrainsoft.rangeanalyser.ui.library.CustomTargetEditorScreen
 import com.nobrainsoft.rangeanalyser.ui.library.FirearmEditorScreen
 import com.nobrainsoft.rangeanalyser.ui.library.FirearmLibraryScreen
 import com.nobrainsoft.rangeanalyser.ui.library.ProfileEditorScreen
@@ -48,6 +49,7 @@ private object Routes {
     const val FIREARM_EDIT = "firearm/edit"
     const val AMMO_EDIT = "ammo/edit"
     const val PROFILE_EDIT = "profile/edit"
+    const val TARGET_EDIT = "target/edit"
     const val LIVE = "live"
     const val PHOTO = "photo"
     const val RESULTS = "results"
@@ -57,6 +59,8 @@ private object Routes {
     fun ammoEdit(id: String?) = "$AMMO_EDIT?id=${id.orEmpty()}"
 
     fun profileEdit(id: String?) = "$PROFILE_EDIT?id=${id.orEmpty()}"
+
+    fun targetEdit(id: String?) = "$TARGET_EDIT?id=${id.orEmpty()}"
 
     fun live(profileId: String) = "$LIVE/$profileId"
 
@@ -125,7 +129,21 @@ fun RangeNavGraph(navController: NavHostController = rememberNavController()) {
             )
         }
         composable(Routes.TARGETS) {
-            TargetLibraryScreen(onBack = navController::popBackStack, onEditCustom = {})
+            TargetLibraryScreen(
+                onBack = navController::popBackStack,
+                onEditCustom = { navController.navigate(Routes.targetEdit(it.id)) },
+                onNewTarget = { navController.navigate(Routes.targetEdit(null)) },
+            )
+        }
+
+        composable(
+            route = "${Routes.TARGET_EDIT}?id={id}",
+            arguments = listOf(navArgument("id") { type = NavType.StringType; defaultValue = "" }),
+        ) { entry ->
+            CustomTargetEditorScreen(
+                targetId = entry.arguments?.getString("id")?.takeIf { it.isNotBlank() },
+                onDone = navController::popBackStack,
+            )
         }
 
         composable(

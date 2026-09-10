@@ -108,21 +108,19 @@ fun AmmoLibraryScreen(onBack: () -> Unit, onEdit: (String?) -> Unit) {
 }
 
 @Composable
-fun TargetLibraryScreen(onBack: () -> Unit, onEditCustom: (TargetSpec) -> Unit) {
+fun TargetLibraryScreen(
+    onBack: () -> Unit,
+    onEditCustom: (TargetSpec) -> Unit,
+    onNewTarget: () -> Unit,
+) {
     val viewModel = rangeViewModel(key = "library") { LibraryViewModel(it.repository) }
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Targets") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-            )
-        },
+    LibraryScaffold(
+        title = "Targets",
+        addLabel = "Add target",
+        onBack = onBack,
+        onAdd = onNewTarget,
     ) { padding ->
         LazyColumn(
             Modifier.fillMaxSize().padding(padding),
@@ -142,6 +140,8 @@ fun TargetLibraryScreen(onBack: () -> Unit, onEditCustom: (TargetSpec) -> Unit) 
                         }
                     },
                     trailing = spec.source.takeIf { it.isNotBlank() },
+                    // A built-in face has published dimensions and is not the user's to change;
+                    // opening it as a copy would quietly detach them from the rulebook.
                     onClick = { if (!spec.isBuiltIn) onEditCustom(spec) },
                 )
             }
