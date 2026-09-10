@@ -272,7 +272,7 @@ class CalibrationViewModel : ViewModel() {
 
     private fun detectedCentre(): Point? {
         val source = image ?: return null
-        return Calibrator.findAimingMark(source)?.center
+        return Calibrator.findTargetCentre(source)
     }
 
     override fun onCleared() {

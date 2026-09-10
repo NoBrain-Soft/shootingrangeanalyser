@@ -264,6 +264,15 @@ object Calibrator {
         return CalibrationOutcome(best, rest, disagreement)
     }
 
+    /**
+     * Where the target's aiming mark sits in the frame, if one can be found.
+     *
+     * The scale-only methods need an origin from somewhere: a reference length tells you how big a
+     * pixel is but not where the middle of the target is. This gives them a real answer instead of
+     * assuming the middle of the photograph, which is only right when the shooter framed perfectly.
+     */
+    fun findTargetCentre(grayImage: Mat): Point? = findAimingMark(grayImage)?.center
+
     // --- Detection helpers ------------------------------------------------------------------------
 
     /**
