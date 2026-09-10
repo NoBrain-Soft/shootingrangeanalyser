@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Exported CSV, JSON and annotated target images are shared from here. -->
+    <files-path
+        name="exports"
+        path="exports/" />
+    <files-path
+        name="targets"
+        path="targets/" />
+</paths>
