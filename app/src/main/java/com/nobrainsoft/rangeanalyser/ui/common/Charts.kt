@@ -84,7 +84,8 @@ fun TrendChart(
                     // Tap to inspect: a phone has no hover, and a value on every point would be
                     // unreadable.
                     detectTapGestures { tap ->
-                        val plot = Plot(size.width, size.height, trend)
+                        // `size` here is the pointer-input IntSize, not the DrawScope's Size.
+                        val plot = Plot(size.width.toFloat(), size.height.toFloat(), trend)
                         selected = plot.nearestIndex(tap.x)
                     }
                 },

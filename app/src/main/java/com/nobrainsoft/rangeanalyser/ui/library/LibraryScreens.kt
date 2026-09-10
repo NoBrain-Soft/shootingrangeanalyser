@@ -1,3 +1,7 @@
+// TopAppBar is still @ExperimentalMaterial3Api in Material3 1.3. Opted in at file level
+// rather than per function: every top-level screen here has an app bar.
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.nobrainsoft.rangeanalyser.ui.library
 
 import androidx.compose.foundation.clickable
@@ -15,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton

@@ -123,7 +123,9 @@ fun LiveScreen(
                     val provider = providerFuture.get()
 
                     val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = previewView.surfaceProvider
+                        // The setter, not the synthetic property: CameraX 1.4 has no matching
+                        // getter, so `it.surfaceProvider = ...` does not resolve.
+                        it.setSurfaceProvider(previewView.surfaceProvider)
                     }
                     val analysis = ImageAnalysis.Builder()
                         // Dropping frames is right here: the watcher needs the newest picture of
