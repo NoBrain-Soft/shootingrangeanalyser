@@ -23,6 +23,15 @@ class Bitmap {
 
     companion object {
         fun createBitmap(width: Int, height: Int, config: Config): Bitmap = stub()
+        fun createBitmap(
+            source: Bitmap,
+            x: Int,
+            y: Int,
+            width: Int,
+            height: Int,
+            m: Matrix?,
+            filter: Boolean,
+        ): Bitmap = stub()
     }
 }
 
@@ -43,3 +52,8 @@ object BitmapFactory {
 }
 
 class Rect(var left: Int = 0, var top: Int = 0, var right: Int = 0, var bottom: Int = 0)
+
+class Matrix {
+    fun postRotate(degrees: Float): Boolean = stub()
+    fun postScale(sx: Float, sy: Float): Boolean = stub()
+}

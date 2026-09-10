@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -168,24 +169,40 @@ fun CustomTargetEditorScreen(targetId: String?, onDone: () -> Unit) {
             )
 
             Text("Paper size", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Only used to sanity-check your measurements and to give the calibrator something " +
+                    "of known size to find. A preset is a shortcut, not a limit - anything can be " +
+                    "typed underneath.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                CustomTargets.Sheet.common.take(3).forEach { sheet ->
+                CustomTargets.Sheet.common.take(4).forEach { sheet ->
                     FilterChip(
-                        selected = state.draft.sheetWidthMm == sheet.widthMm,
+                        selected = state.draft.sheetWidthMm == sheet.widthMm &&
+                            state.draft.sheetHeightMm == sheet.heightMm,
                         onClick = { viewModel.setSheet(sheet) },
                         label = { Text(sheet.label) },
                         modifier = Modifier.weight(1f),
                     )
                 }
             }
-            Text(
-                "Only used to sanity-check your measurements and to give the calibrator something " +
-                    "of known size to find.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            StepperField(
+                label = "Paper width (mm)",
+                value = state.draft.sheetWidthMm ?: CustomTargets.Sheet.A4.widthMm,
+                step = 1.0,
+                range = 20.0..2000.0,
+                onValueChange = { width -> viewModel.update { it.copy(sheetWidthMm = width) } },
+            )
+            StepperField(
+                label = "Paper height (mm)",
+                value = state.draft.sheetHeightMm ?: CustomTargets.Sheet.A4.heightMm,
+                step = 1.0,
+                range = 20.0..2000.0,
+                onValueChange = { height -> viewModel.update { it.copy(sheetHeightMm = height) } },
             )
 
             StepperField(
@@ -270,8 +287,9 @@ fun CustomTargetEditorScreen(targetId: String?, onDone: () -> Unit) {
 /**
  * The measuring flow: set the scale, mark the centre, tap each ring.
  *
- * One instruction on screen at a time. This is done standing up, often in bright sun, holding a
- * target in the other hand.
+ * One instruction on screen at a time, and nothing advances by itself. This is done standing up,
+ * often in bright sun, holding a target in the other hand - so every mark can be moved by tapping
+ * near it, the picture zooms, and the step only ends when the shooter says it does.
  */
 @Composable
 private fun MeasureStepScreen(
@@ -283,13 +301,18 @@ private fun MeasureStepScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Measure the target") },
+                title = { Text(stepTitle(state.step)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
+                    if (state.photo != null) {
+                        IconButton(onClick = viewModel::rotate) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Rotate the photo")
+                        }
+                    }
                     if (state.marks.isNotEmpty()) {
                         IconButton(onClick = viewModel::undoMark) {
                             Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
@@ -301,40 +324,62 @@ private fun MeasureStepScreen(
         bottomBar = {
             Column(Modifier.padding(Dimens.gutter)) {
                 if (state.step == MeasureStep.SCALE) {
-                    Text("How wide is the paper?", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        "How far apart are those two marks in real life?",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        CustomTargets.Sheet.common.take(3).forEach { sheet ->
+                        CustomTargets.Sheet.common.take(4).forEach { sheet ->
                             FilterChip(
                                 selected = state.referenceLengthMm == sheet.widthMm,
                                 onClick = {
                                     viewModel.setReferenceLength(sheet.widthMm)
                                     viewModel.setSheet(sheet)
                                 },
-                                label = { Text("${sheet.label} ${sheet.widthMm.toInt()}") },
+                                label = { Text(sheet.label) },
                                 modifier = Modifier.weight(1f),
                             )
                         }
                     }
+                    StepperField(
+                        label = "Distance (mm)",
+                        value = state.referenceLengthMm,
+                        step = 1.0,
+                        range = 5.0..2000.0,
+                        onValueChange = viewModel::setReferenceLength,
+                        supporting = "The paper's width, or anything else you can measure",
+                    )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(Dimens.itemSpacing)) {
-                    OutlinedButton(
-                        onClick = viewModel::restartMeasuring,
-                        modifier = Modifier.heightIn(min = Dimens.touchTargetRange),
-                    ) {
-                        Text("Start over")
+                Row(
+                    Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.itemSpacing),
+                ) {
+                    if (state.step != MeasureStep.NEED_PHOTO) {
+                        OutlinedButton(
+                            onClick = viewModel::previousStep,
+                            modifier = Modifier.heightIn(min = Dimens.touchTargetRange),
+                        ) {
+                            Text("Back")
+                        }
                     }
                     Button(
-                        onClick = viewModel::finishMeasuring,
-                        enabled = state.draft.ringDiametersMm.isNotEmpty(),
+                        onClick = viewModel::nextStep,
+                        enabled = state.stepComplete,
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = Dimens.touchTargetRange),
                     ) {
-                        Text("Done - ${state.draft.ringDiametersMm.size} rings")
+                        Text(
+                            when (state.step) {
+                                MeasureStep.RINGS ->
+                                    "Done - ${state.draft.ringDiametersMm.size} rings"
+                                else -> "Next"
+                            },
+                        )
                     }
                 }
             }
@@ -349,20 +394,20 @@ private fun MeasureStepScreen(
         ) {
             state.failure?.let { CautionBanner(it) }
 
-            Text(
-                when (state.step) {
-                    MeasureStep.NEED_PHOTO -> "Photograph the target square on, with the whole " +
-                        "sheet in the frame."
-                    MeasureStep.SCALE -> "Tap the left and right edges of the paper."
-                    MeasureStep.CENTRE -> "Tap the exact centre of the target."
-                    MeasureStep.RINGS -> "Tap the outer edge of each scoring ring, smallest first."
-                },
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Text(stepInstruction(state.step), style = MaterialTheme.typography.bodyLarge)
+
+            if (state.step != MeasureStep.NEED_PHOTO && state.photo != null) {
+                Text(
+                    "Pinch to zoom, drag to move. Tap a mark to pick it up and put it somewhere " +
+                        "else.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (state.step == MeasureStep.RINGS && state.draft.ringDiametersMm.isNotEmpty()) {
                 Text(
-                    state.draft.ringDiametersMm.joinToString("  ·  ") {
+                    state.draft.ringDiametersMm.sorted().joinToString("  ·  ") {
                         String.format(Locale.ROOT, "%.0f mm", it)
                     },
                     style = MaterialTheme.typography.bodyMedium,
@@ -390,8 +435,12 @@ private fun MeasureStepScreen(
                         image = photo,
                         marks = state.marks,
                         onMark = viewModel::addMark,
+                        onMoveMark = viewModel::moveMark,
+                        maximumMarks = state.marksWanted,
+                        connectMarks = state.step == MeasureStep.SCALE,
                         markLabels = when (state.step) {
-                            MeasureStep.SCALE -> listOf("left", "right")
+                            MeasureStep.SCALE -> listOf("one edge", "the other")
+                            MeasureStep.CENTRE -> listOf("centre")
                             else -> emptyList()
                         },
                     )
@@ -399,6 +448,24 @@ private fun MeasureStepScreen(
             }
         }
     }
+}
+
+private fun stepTitle(step: MeasureStep): String = when (step) {
+    MeasureStep.NEED_PHOTO -> "Photograph the target"
+    MeasureStep.SCALE -> "Set the scale"
+    MeasureStep.CENTRE -> "Mark the centre"
+    MeasureStep.RINGS -> "Mark the rings"
+}
+
+private fun stepInstruction(step: MeasureStep): String = when (step) {
+    MeasureStep.NEED_PHOTO ->
+        "Square on, with the whole sheet in the frame."
+    MeasureStep.SCALE ->
+        "Put a mark on each edge of the paper, then say how far apart they really are."
+    MeasureStep.CENTRE ->
+        "Put a mark on the exact centre of the target."
+    MeasureStep.RINGS ->
+        "Tap the outer edge of each scoring ring. Order does not matter."
 }
 
 @Composable

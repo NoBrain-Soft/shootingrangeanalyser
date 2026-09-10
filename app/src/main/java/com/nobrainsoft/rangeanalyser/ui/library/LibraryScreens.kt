@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nobrainsoft.rangeanalyser.core.model.Calibers
 import com.nobrainsoft.rangeanalyser.core.stats.LoadPerformance
@@ -139,7 +141,10 @@ fun TargetLibraryScreen(
                             append("  ·  dimensions approximate")
                         }
                     },
-                    trailing = spec.source.takeIf { it.isNotBlank() },
+                    // Where the dimensions came from is a sentence, not a value, so it goes under
+                    // the row rather than beside it. Put in `trailing` it took whatever width it
+                    // wanted and squeezed the name into a column one character wide.
+                    footnote = spec.source.takeIf { it.isNotBlank() },
                     // A built-in face has published dimensions and is not the user's to change;
                     // opening it as a copy would quietly detach them from the rulebook.
                     onClick = { if (!spec.isBuiltIn) onEditCustom(spec) },
@@ -179,12 +184,20 @@ private fun LibraryScaffold(
     )
 }
 
+/**
+ * One entry in a library list.
+ *
+ * [trailing] is for a short measured value shown beside the name; it is width-capped, because an
+ * unbounded one takes as much of the row as it likes and leaves the name wrapping a letter at a
+ * time. Anything longer than a couple of words belongs in [footnote], under the row.
+ */
 @Composable
 private fun LibraryRow(
     title: String,
     subtitle: String,
     onClick: () -> Unit,
     trailing: String? = null,
+    footnote: String? = null,
 ) {
     Card(
         modifier = Modifier
@@ -193,26 +206,39 @@ private fun LibraryRow(
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(Dimens.cardCorner),
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(Dimens.gutter),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall)
-                if (subtitle.isNotBlank()) {
+        Column(Modifier.fillMaxWidth().padding(Dimens.gutter)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleSmall)
+                    if (subtitle.isNotBlank()) {
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                trailing?.let {
                     Text(
-                        subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier
+                            .widthIn(max = 120.dp)
+                            .padding(start = 8.dp),
                     )
                 }
             }
-            trailing?.let {
+            footnote?.let {
                 Text(
                     it,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
                 )
             }
         }
