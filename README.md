@@ -70,11 +70,13 @@ export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64   # or org.gradle.java.home 
 for the whole build, so without that guard `./gradlew :core:test` would fail on any machine or CI
 container without an SDK.
 
-For the same reason AGP is declared only in `app/build.gradle.kts`, never at the root. The Kotlin
-plugins are the opposite case and are all declared at the root with `apply false`: they share one
-artifact, so declaring any one of them puts the rest on the classpath with an unknown version, and
-Gradle then rejects a subproject that asks for one *with* a version. Root owns the versions;
-subprojects ask by bare ID.
+**The root `plugins {}` block is empty on purpose, and adding anything to it will break the build.**
+Each module declares its own plugins with versions. Gradle gives every project its own plugin
+classloader with the parent project's as its parent, so a plugin declared at the root is the copy
+the subprojects link against — and it cannot see anything the subprojects loaded. AGP at the root
+would need Google's Maven for every build; the Kotlin plugins at the root would place
+`kotlin.android` above AGP, where it cannot reach the variant API it needs. The root build script
+spells this out at more length.
 
 ## Status and handover
 
