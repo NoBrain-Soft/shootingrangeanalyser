@@ -21,6 +21,7 @@ data class Session(
     val distanceM: Double,
     val position: ShootingPosition = ShootingPosition.UNKNOWN,
     val support: SupportType = SupportType.NONE,
+    val handedness: Handedness = Handedness.UNKNOWN,
     val mode: SessionMode,
     val startedAtEpochMs: Long,
     val shots: List<Shot> = emptyList(),
@@ -41,6 +42,15 @@ data class Session(
 }
 
 enum class SessionMode { LIVE, PHOTO }
+
+/**
+ * Which hand the shooter uses.
+ *
+ * Only the coaching layer cares, and only for the pistol-shooting associations that are stated
+ * left-or-right ("low and left for a right-handed shooter"). Unknown is a perfectly good answer:
+ * those tips are then phrased without assuming a side.
+ */
+enum class Handedness { UNKNOWN, RIGHT, LEFT }
 
 enum class ShootingPosition {
     UNKNOWN,

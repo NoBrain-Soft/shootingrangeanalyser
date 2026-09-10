@@ -20,6 +20,7 @@ data class Profile(
     val distanceM: Double,
     val position: ShootingPosition = ShootingPosition.UNKNOWN,
     val support: SupportType = SupportType.NONE,
+    val handedness: Handedness = Handedness.UNKNOWN,
     val calibration: SavedCalibration? = null,
     val units: UnitPreference = UnitPreference(),
     val lastUsedEpochMs: Long = 0L,
