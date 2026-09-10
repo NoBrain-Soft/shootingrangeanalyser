@@ -60,7 +60,7 @@ export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64   # or org.gradle.java.home 
 ```
 
 ```bash
-./gradlew :core:test :vision:test    # the analysis engine - 177 tests
+./gradlew :core:test :vision:test    # the analysis engine - 214 tests
 ./gradlew :app:assembleDebug         # the app; needs an Android SDK
 ./gradlew :app:installDebug          # build and push to a device over adb
 
@@ -83,32 +83,41 @@ spells this out at more length.
 
 ## Status and handover
 
-The analysis engine is complete and tested: **177 tests**, covering scoring against every ring
+The analysis engine is complete and tested: **214 tests**, covering scoring against every ring
 boundary, group statistics against hand-computed fixtures, flyer detection held to its nominal
 false-positive rate by Monte Carlo, ballistics validated against published velocity and
 time-of-flight figures, and detection run against synthetically rendered targets with perspective,
 blur, noise and uneven lighting.
 
-**The `:app` module has never been assembled**, only type-checked. It was written in an environment
-where Google's Maven repository is unreachable, so AGP, Compose, CameraX and Room cannot be
-resolved there and `./gradlew :app:assembleDebug` cannot run at all.
+`:app` builds and runs on a phone. It cannot be built *here*, though: this repository is developed
+in an environment where Google's Maven is unreachable, so AGP, Compose, CameraX and Room do not
+resolve and `./gradlew :app:assembleDebug` will not run at all.
 
-What *has* run is `tools/typecheck`, which compiles the whole `:app` source tree against Compose
-Multiplatform's Maven Central artifacts plus a set of stubs for the Android surface. It currently
-passes with no errors and no warnings. That covers type errors, unresolved references and missing
-opt-ins across all ~7,500 lines; it does not cover AGP, Room's generated code, or anything at
-runtime. Its README is specific about the difference, and worth reading before trusting a clean run.
+What runs instead is `tools/typecheck`, which compiles the whole `:app` source tree against Compose
+Multiplatform's Maven Central artifacts plus stubs for the Android surface. It passes with no errors
+and no warnings, and it catches type errors, unresolved references and missing opt-ins across all
+~8,000 lines. It does not cover AGP, Room's generated code, or anything at runtime — its README is
+specific about the difference and worth reading before trusting a clean run.
 
-Everything in `:app` is deliberately logic-free — camera plumbing, screens and persistence over an
-engine that is tested — so expect any remaining build fixes to be mechanical rather than conceptual.
-
-When you first open it in Android Studio, three manual checks are worth doing in order:
+Three manual checks are worth doing after any substantial change:
 
 1. **Photo of a target with known hole positions.** Confirms calibration, rectification, detection
    and scoring end to end.
 2. **A live string.** Confirms the camera pipeline, the watcher's confirmation logic, and that the
    spoken and on-screen calls agree.
 3. **Compare two saved sessions.** Confirms persistence and that the comparison verdict appears.
+
+## Targets the app does not know
+
+Most ranges print their own face. Rather than score those against the wrong geometry, the custom
+target editor builds one from what you measure: photograph the target, tap the two edges of the
+paper to set the scale, tap the centre, then tap each ring. Evenly spaced faces can be typed in
+instead, from the outer diameter and the ring count.
+
+A measured face is marked as measured, never as verified, and a table that would score wrongly is
+refused with a reason — two rings the same size, a ring wider than the paper it is printed on, an
+inner ring larger than the ten. Decimal scoring is offered only when the rings really are evenly
+spaced, because tenths of an uneven ring are invented precision.
 
 ## What is deliberately not here
 

@@ -5,9 +5,8 @@
 package com.nobrainsoft.rangeanalyser.ui.photo
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,7 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nobrainsoft.rangeanalyser.appContainer
-import com.nobrainsoft.rangeanalyser.camera.ImageBridge
+import com.nobrainsoft.rangeanalyser.camera.PhotoLoader
 import com.nobrainsoft.rangeanalyser.core.model.Caliber
 import com.nobrainsoft.rangeanalyser.core.model.Profile
 import com.nobrainsoft.rangeanalyser.core.target.TargetSpec
@@ -61,6 +62,7 @@ import com.nobrainsoft.rangeanalyser.ui.rangeViewModel
 import com.nobrainsoft.rangeanalyser.ui.theme.Dimens
 import com.nobrainsoft.rangeanalyser.ui.theme.ScoreColors
 import java.io.File
+import kotlinx.coroutines.launch
 
 /**
  * Photo analysis, end to end.
@@ -128,10 +130,34 @@ fun PhotoScreen(
 @Composable
 private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, onBack: () -> Unit) {
     var pendingCapture by remember { mutableStateOf<Uri?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var failure by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
+    /**
+     * Reads the picked photograph.
+     *
+     * Off the main thread, because decoding a 50-megapixel phone photograph and converting it for
+     * OpenCV takes long enough to freeze the UI. Wrapped, because every step of it can fail for
+     * reasons outside the app's control - a URI another app has already revoked, a format that
+     * cannot be decoded, a picture too large for the heap - and none of those are worth a crash.
+     */
     fun load(uri: Uri?) {
-        val bitmap = uri?.let { decode(context, it) } ?: return
-        onImage(ImageBridge.greyscaleOf(bitmap))
+        if (uri == null) return
+        if (!context.appContainer.openCvAvailable) {
+            failure = "Image analysis is unavailable on this device - the OpenCV libraries did " +
+                "not load, so a photograph cannot be measured."
+            return
+        }
+        busy = true
+        failure = null
+        scope.launch {
+            val outcome = PhotoLoader.loadGreyscale(context, uri)
+            busy = false
+            outcome
+                .onSuccess { onImage(it) }
+                .onFailure { failure = PhotoLoader.reasonFor(it) }
+        }
     }
 
     val pickImage = rememberLauncherForActivityResult(
@@ -160,16 +186,33 @@ private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, o
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            failure?.let { CautionBanner(it) }
+
+            if (busy) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(24.dp))
+                    Text("Reading the photograph...", modifier = Modifier.padding(start = 12.dp))
+                }
+            }
+
             Button(
+                enabled = !busy,
                 onClick = {
-                    val file = File(context.appContainer.files.targetsDirectory, "capture.jpg")
-                    val uri = FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.fileprovider",
-                        file,
-                    )
-                    pendingCapture = uri
-                    takePicture.launch(uri)
+                    // Every part of this can fail on a device without a camera app, or where the
+                    // provider is misconfigured; neither is worth taking the app down for.
+                    runCatching {
+                        val file = File(context.appContainer.files.targetsDirectory, "capture.jpg")
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file,
+                        )
+                        pendingCapture = uri
+                        takePicture.launch(uri)
+                    }.onFailure {
+                        Log.w("RangeAnalyser", "could not start the camera", it)
+                        failure = "No camera app would open. Choose an existing photo instead."
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -180,7 +223,13 @@ private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, o
             }
 
             OutlinedButton(
-                onClick = { pickImage.launch("image/*") },
+                enabled = !busy,
+                onClick = {
+                    runCatching { pickImage.launch("image/*") }.onFailure {
+                        Log.w("RangeAnalyser", "no gallery app", it)
+                        failure = "No app on this phone offered a picture to open."
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = Dimens.touchTargetRange),
@@ -334,27 +383,3 @@ private fun Busy(message: String) {
     }
 }
 
-/**
- * Loads a photograph at a workable size.
- *
- * Full-resolution phone photographs are far larger than detection needs, and rectifying one costs
- * memory for no gain: the rectifier resamples to a fixed pixels-per-millimetre anyway.
- */
-private fun decode(context: Context, uri: Uri): Bitmap? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    context.contentResolver.openInputStream(uri)?.use {
-        BitmapFactory.decodeStream(it, null, bounds)
-    }
-
-    var sample = 1
-    while (bounds.outWidth / sample > MAX_DIMENSION || bounds.outHeight / sample > MAX_DIMENSION) {
-        sample *= 2
-    }
-
-    val options = BitmapFactory.Options().apply { inSampleSize = sample }
-    return context.contentResolver.openInputStream(uri)?.use {
-        BitmapFactory.decodeStream(it, null, options)
-    }
-}
-
-private const val MAX_DIMENSION = 2400

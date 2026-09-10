@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -19,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
@@ -169,12 +171,19 @@ private fun ProfileCard(
         shape = RoundedCornerShape(Dimens.cardCorner),
     ) {
         Column(Modifier.padding(Dimens.gutter)) {
-            Text(
-                summary.profile.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.clickable(onClick = onEdit),
-            )
+            // The edit affordance used to be nothing but a tap on this text, which nobody found -
+            // reported as "I cannot edit my setups". It is a button now.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    summary.profile.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f).clickable(onClick = onEdit),
+                )
+                IconButton(onClick = onEdit, modifier = Modifier.size(Dimens.touchTarget)) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit ${summary.profile.name}")
+                }
+            }
             Text(
                 summary.firearmName ?: "No firearm set",
                 style = MaterialTheme.typography.bodyMedium,

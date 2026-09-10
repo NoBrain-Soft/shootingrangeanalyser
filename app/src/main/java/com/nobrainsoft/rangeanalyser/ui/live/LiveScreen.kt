@@ -28,6 +28,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -172,7 +176,7 @@ fun LiveScreen(
                 color = Color.Black.copy(alpha = 0.55f),
             ) {
                 TargetView(
-                    spec = spec,
+                    spec = state.spec ?: spec,
                     layers = listOf(
                         ShotLayer(
                             label = "This string",
@@ -310,6 +314,60 @@ private fun Controls(
                     value = state.zoomRatio,
                     onValueChange = { viewModel.setZoom(it, state.maximumZoom) },
                     valueRange = 1f..state.maximumZoom,
+                )
+            }
+        }
+
+        // Changing target or re-measuring used to mean walking off the firing point to edit a
+        // setup. Both belong here: the club puts up a different face, or the phone gets nudged.
+        Row(horizontalArrangement = Arrangement.spacedBy(Dimens.itemSpacing)) {
+            val targets by viewModel.targets.collectAsStateWithLifecycle()
+            var picking by remember { mutableStateOf(false) }
+
+            OutlinedButton(
+                onClick = { picking = true },
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = Dimens.touchTarget),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+            ) {
+                Text(state.spec?.name ?: "Target", maxLines = 1)
+            }
+
+            OutlinedButton(
+                onClick = viewModel::recalibrate,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = Dimens.touchTarget),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+            ) {
+                Text("Re-measure")
+            }
+
+            if (picking) {
+                AlertDialog(
+                    onDismissRequest = { picking = false },
+                    title = { Text("Which target is up?") },
+                    text = {
+                        LazyColumn {
+                            items(targets) { candidate ->
+                                TextButton(
+                                    onClick = {
+                                        viewModel.changeTarget(candidate)
+                                        picking = false
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = Dimens.touchTarget),
+                                ) {
+                                    Text(candidate.name, modifier = Modifier.fillMaxWidth())
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { picking = false }) { Text("Cancel") }
+                    },
                 )
             }
         }

@@ -53,16 +53,38 @@ object ImageBridge {
         return mat
     }
 
+    /**
+     * Converts a decoded photograph to the greyscale matrix everything downstream expects.
+     *
+     * [Utils.bitmapToMat] only accepts ARGB_8888 and RGB_565 and throws on anything else, and a
+     * picture that arrives from another app can be neither - a hardware bitmap from a modern
+     * gallery is the common case. Copying into a known configuration first costs one allocation and
+     * removes a crash that the user cannot do anything about.
+     */
     fun greyscaleOf(bitmap: Bitmap): Mat {
+        require(bitmap.width > 0 && bitmap.height > 0) { "the photograph decoded to nothing" }
+
+        val usable = if (bitmap.config == Bitmap.Config.ARGB_8888) {
+            bitmap
+        } else {
+            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                ?: throw IllegalArgumentException("this photograph could not be read")
+        }
+
         val colour = Mat()
-        Utils.bitmapToMat(bitmap, colour)
-        val grey = Mat()
-        Imgproc.cvtColor(colour, grey, Imgproc.COLOR_RGBA2GRAY)
-        colour.release()
-        return grey
+        try {
+            Utils.bitmapToMat(usable, colour)
+            val grey = Mat()
+            Imgproc.cvtColor(colour, grey, Imgproc.COLOR_RGBA2GRAY)
+            return grey
+        } finally {
+            colour.release()
+            if (usable !== bitmap) usable.recycle()
+        }
     }
 
     fun toBitmap(mat: Mat): Bitmap {
+        require(!mat.empty()) { "there is no image to show" }
         val rgba = Mat()
         when (mat.channels()) {
             1 -> Imgproc.cvtColor(mat, rgba, Imgproc.COLOR_GRAY2RGBA)
