@@ -160,12 +160,27 @@ data class Zone(val label: String, val points: Int, val shape: ZoneShape)
 sealed interface ZoneShape {
     fun contains(point: PointMm): Boolean
 
+    /** Shortest distance from [point] to the zone edge; zero when the point is inside. */
+    fun distanceToEdge(point: PointMm): Double
+
     fun boundingRadiusMm(): Double
+
+    /**
+     * Whether a hole centred at [point] reaches this zone at all.
+     *
+     * Practical rules award the better zone when the hole breaks the line, so the caller passes
+     * the bullet radius as [marginMm] - the zone equivalent of edge gauging.
+     */
+    fun touches(point: PointMm, marginMm: Double): Boolean =
+        contains(point) || distanceToEdge(point) <= marginMm
 
     @Serializable
     data class Circle(val centre: PointMm, val diameterMm: Double) : ZoneShape {
         override fun contains(point: PointMm): Boolean =
             point.distanceTo(centre) <= diameterMm / 2.0
+
+        override fun distanceToEdge(point: PointMm): Double =
+            (point.distanceTo(centre) - diameterMm / 2.0).coerceAtLeast(0.0)
 
         override fun boundingRadiusMm(): Double = centre.radius + diameterMm / 2.0
     }
@@ -175,6 +190,12 @@ sealed interface ZoneShape {
         override fun contains(point: PointMm): Boolean =
             kotlin.math.abs(point.x - centre.x) <= widthMm / 2.0 &&
                 kotlin.math.abs(point.y - centre.y) <= heightMm / 2.0
+
+        override fun distanceToEdge(point: PointMm): Double {
+            val overshootX = (kotlin.math.abs(point.x - centre.x) - widthMm / 2.0).coerceAtLeast(0.0)
+            val overshootY = (kotlin.math.abs(point.y - centre.y) - heightMm / 2.0).coerceAtLeast(0.0)
+            return kotlin.math.hypot(overshootX, overshootY)
+        }
 
         override fun boundingRadiusMm(): Double =
             centre.radius + kotlin.math.hypot(widthMm / 2.0, heightMm / 2.0)
@@ -202,6 +223,28 @@ sealed interface ZoneShape {
             return inside
         }
 
+        override fun distanceToEdge(point: PointMm): Double {
+            if (contains(point)) return 0.0
+            var nearest = Double.MAX_VALUE
+            var j = vertices.lastIndex
+            for (i in vertices.indices) {
+                nearest = minOf(nearest, distanceToSegment(point, vertices[j], vertices[i]))
+                j = i
+            }
+            return nearest
+        }
+
         override fun boundingRadiusMm(): Double = vertices.maxOf { it.radius }
+
+        private fun distanceToSegment(point: PointMm, a: PointMm, b: PointMm): Double {
+            val segment = b - a
+            val lengthSquared = segment.x * segment.x + segment.y * segment.y
+            if (lengthSquared == 0.0) return point.distanceTo(a)
+
+            val toPoint = point - a
+            val t = ((toPoint.x * segment.x + toPoint.y * segment.y) / lengthSquared)
+                .coerceIn(0.0, 1.0)
+            return point.distanceTo(a + segment * t)
+        }
     }
 }
