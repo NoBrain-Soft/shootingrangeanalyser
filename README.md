@@ -50,15 +50,31 @@ tested here is the code that runs on the phone.
 
 ## Building
 
+**Use JDK 17 or 21.** Gradle 8.9 and AGP 8.7.3 both predate JDK 25 and fail while parsing its
+version string — `IllegalArgumentException: 25.0.4.1` before a single line of build script runs. If
+your default `java` is newer, point the build at an older one:
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64   # or org.gradle.java.home in gradle.properties
+./gradlew --stop                                      # the old daemon does not pick this up
+```
+
 ```bash
 ./gradlew :core:test :vision:test    # the analysis engine - 177 tests
 ./gradlew :app:assembleDebug         # the app; needs an Android SDK
+./gradlew :app:installDebug          # build and push to a device over adb
 ```
 
 `settings.gradle.kts` includes `:app` only when an Android SDK is present (`ANDROID_HOME`, or
 `sdk.dir` in `local.properties`). Resolving the Android Gradle Plugin happens at configuration time
 for the whole build, so without that guard `./gradlew :core:test` would fail on any machine or CI
 container without an SDK.
+
+For the same reason AGP is declared only in `app/build.gradle.kts`, never at the root. The Kotlin
+plugins are the opposite case and are all declared at the root with `apply false`: they share one
+artifact, so declaring any one of them puts the rest on the classpath with an unknown version, and
+Gradle then rejects a subproject that asks for one *with* a version. Root owns the versions;
+subprojects ask by bare ID.
 
 ## Status and handover
 
