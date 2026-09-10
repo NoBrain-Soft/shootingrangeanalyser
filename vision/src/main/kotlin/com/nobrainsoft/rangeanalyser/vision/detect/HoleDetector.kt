@@ -314,7 +314,7 @@ object HoleDetector {
         return restored
     }
 
-    private fun bridgeGaps(binary: Mat, expectedDiameterPx: Double) {
+    internal fun bridgeGaps(binary: Mat, expectedDiameterPx: Double) {
         val size = (expectedDiameterPx * BRIDGE_KERNEL_FRACTION)
             .toInt()
             .coerceAtLeast(3)
@@ -335,7 +335,7 @@ object HoleDetector {
      * would have been if it had been visible. The size limit is what stops the same operation
      * flooding the inside of every printed scoring ring.
      */
-    private fun fillEnclosedHoles(binary: Mat, expectedDiameterPx: Double) {
+    internal fun fillEnclosedHoles(binary: Mat, expectedDiameterPx: Double) {
         // Deliberately tighter than the candidate size band. On a face whose rings are unknown - a
         // custom target, or one photographed without a spec - an unmodelled ring line is still a
         // closed curve, and a generous limit here would flood its interior and lose every shot
@@ -373,7 +373,7 @@ object HoleDetector {
      * matters most for a shot that landed on a ring line: the hole survives as a compact disc while
      * the line it was joined to disappears.
      */
-    private fun removeThinStructures(binary: Mat, expectedDiameterPx: Double) {
+    internal fun removeThinStructures(binary: Mat, expectedDiameterPx: Double) {
         val size = (expectedDiameterPx * THIN_STRUCTURE_FRACTION)
             .toInt()
             .coerceAtLeast(3)
@@ -386,7 +386,7 @@ object HoleDetector {
         kernel.release()
     }
 
-    private data class Candidate(
+    internal data class Candidate(
         val enclosedArea: Double,
         val centroid: Point,
         val axisAngleRad: Double,
@@ -401,7 +401,7 @@ object HoleDetector {
      * what makes a hole in the black work: the torn ring is a thin outline, but the region it
      * encloses is exactly the hole.
      */
-    private fun candidatesFrom(binary: Mat, expectedDiameterPx: Double): List<Candidate> {
+    internal fun candidatesFrom(binary: Mat, expectedDiameterPx: Double): List<Candidate> {
         val contours = outerContours(binary)
 
         val expectedArea = Math.PI * expectedDiameterPx * expectedDiameterPx / 4.0
@@ -583,7 +583,7 @@ object HoleDetector {
     }
 
     /** Places [count] centres evenly along a blob's long axis. */
-    private fun spreadAlongAxis(candidate: Candidate, count: Int): List<Point> {
+    internal fun spreadAlongAxis(candidate: Candidate, count: Int): List<Point> {
         val axisX = cos(candidate.axisAngleRad)
         val axisY = sin(candidate.axisAngleRad)
         val span = candidate.extentMax - candidate.extentMin
