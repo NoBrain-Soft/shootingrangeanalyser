@@ -107,14 +107,20 @@ object ImageBridge {
  * the callback must not hold on to it. Anything worth keeping should be cloned.
  */
 class LumaAnalyzer(
-    private val onLuma: (luma: Mat, timestampMs: Long) -> Unit,
+    private val onLuma: (luma: Mat, timestampMs: Long, rotationDegrees: Int) -> Unit,
 ) : ImageAnalysis.Analyzer {
 
     override fun analyze(image: ImageProxy) {
         image.use { frame ->
             val luma = ImageBridge.lumaOf(frame)
             try {
-                onLuma(luma, frame.imageInfo.timestamp / 1_000_000L)
+                // The rotation travels with the frame because the overlay has to undo it: the
+                // analyser sees the sensor's own orientation, the preview shows it upright.
+                onLuma(
+                    luma,
+                    frame.imageInfo.timestamp / 1_000_000L,
+                    frame.imageInfo.rotationDegrees,
+                )
             } finally {
                 luma.release()
             }

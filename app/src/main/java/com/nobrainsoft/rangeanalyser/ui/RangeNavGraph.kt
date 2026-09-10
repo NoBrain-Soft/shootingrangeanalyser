@@ -197,6 +197,13 @@ fun RangeNavGraph(navController: NavHostController = rememberNavController()) {
                             popUpTo(Routes.HOME)
                         }
                     },
+                    // Straight from a live string into photographing the same target, so the
+                    // string is saved and the face can then be measured properly.
+                    onAnalysePhoto = {
+                        navController.navigate(Routes.photo(profile.id)) {
+                            popUpTo(Routes.HOME)
+                        }
+                    },
                     onBack = navController::popBackStack,
                 )
             }

@@ -149,6 +149,16 @@ class ShotWatcher(
     private var settledFrames = 0
     private var shotCount = 0
     private var lastConfirmedAtMs = Long.MIN_VALUE
+    private var lastShift: Point = Point(0.0, 0.0)
+
+    /**
+     * How far the latest frame sits from the reference the shots were measured against.
+     *
+     * The overlay needs this. Shot positions are fixed in the target's own millimetres, but the
+     * phone is hand-held and drifts; adding this puts a marker back over the hole it belongs to
+     * instead of leaving it where the target used to be.
+     */
+    val alignmentShift: Point @Synchronized get() = Point(lastShift.x, lastShift.y)
 
     val isArmed: Boolean @Synchronized get() = reference != null
 
@@ -174,6 +184,7 @@ class ShotWatcher(
         releaseReference()
         reference = frame.clone()
         referenceDetail = detailOf(frame)
+        lastShift = Point(0.0, 0.0)
         pending.clear()
         framesOfWholesaleChange = 0
         settledFrames = 0
@@ -204,6 +215,7 @@ class ShotWatcher(
         }
 
         val shift = estimateShift(reference, frame)
+        if (shift != null) lastShift = shift
         val motionLimit = max(frame.cols(), frame.rows()) * settings.motionSettleFraction
         val settled = shift != null && hypot(shift.x, shift.y) <= motionLimit
 

@@ -29,6 +29,16 @@ enum class MeasureStep {
 
     /** One mark per scoring ring. */
     RINGS,
+
+    /**
+     * One mark on the edge of the black aiming mark.
+     *
+     * Not decoration. This is the only thing on most faces whose real size the app knows and whose
+     * outline it can find by itself, so it is what ring-geometry calibration measures. Without it
+     * the app falls back to hunting for the sheet's outline, which on a table with other paper on
+     * it locks onto the wrong rectangle - and then every position it reports is somewhere else.
+     */
+    BLACK,
 }
 
 data class CustomTargetState(
@@ -54,6 +64,7 @@ data class CustomTargetState(
             MeasureStep.SCALE -> 2
             MeasureStep.CENTRE -> 1
             MeasureStep.RINGS -> Int.MAX_VALUE
+            MeasureStep.BLACK -> 1
         }
 
     val stepComplete: Boolean
@@ -62,6 +73,8 @@ data class CustomTargetState(
             MeasureStep.SCALE -> marks.size >= 2
             MeasureStep.CENTRE -> marks.size >= 1
             MeasureStep.RINGS -> marks.isNotEmpty()
+            // Optional: plenty of faces have no black at all.
+            MeasureStep.BLACK -> true
         }
 
     /** Built only when valid, so the preview can never show a face that would not save. */
@@ -92,6 +105,7 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
     private var scaleMarks: List<ImageMark> = emptyList()
     private var centreMark: ImageMark? = null
     private var ringMarks: List<ImageMark> = emptyList()
+    private var blackMark: ImageMark? = null
 
     fun load(targetId: String?) {
         if (targetId == null) return
@@ -165,6 +179,7 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
         scaleMarks = emptyList()
         centreMark = null
         ringMarks = emptyList()
+        blackMark = null
         _state.value = _state.value.copy(
             photo = ImageBridge.toImageBitmap(greyscale),
             step = MeasureStep.SCALE,
@@ -195,6 +210,7 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
         scaleMarks = scaleMarks.map(::turn)
         centreMark = centreMark?.let(::turn)
         ringMarks = ringMarks.map(::turn)
+        blackMark = blackMark?.let(::turn)
 
         _state.value = _state.value.copy(
             photo = ImageBridge.toImageBitmap(rotated),
@@ -254,7 +270,12 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
                 recomputeRings()
             }
 
-            MeasureStep.RINGS -> _state.value = current.copy(measuring = false)
+            MeasureStep.RINGS -> {
+                _state.value = current.copy(step = MeasureStep.BLACK, marks = listOfNotNull(blackMark))
+                recomputeBlack()
+            }
+
+            MeasureStep.BLACK -> _state.value = current.copy(measuring = false)
         }
     }
 
@@ -265,6 +286,7 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
             MeasureStep.SCALE -> MeasureStep.NEED_PHOTO
             MeasureStep.CENTRE -> MeasureStep.SCALE
             MeasureStep.RINGS -> MeasureStep.CENTRE
+            MeasureStep.BLACK -> MeasureStep.RINGS
         } ?: return
         _state.value = current.copy(step = back, marks = marksFor(back), failure = null)
     }
@@ -273,6 +295,7 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
         scaleMarks = emptyList()
         centreMark = null
         ringMarks = emptyList()
+        blackMark = null
         _state.value = _state.value.copy(
             step = if (image == null) MeasureStep.NEED_PHOTO else MeasureStep.SCALE,
             marks = emptyList(),
@@ -315,6 +338,7 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
         MeasureStep.SCALE -> scaleMarks
         MeasureStep.CENTRE -> listOfNotNull(centreMark)
         MeasureStep.RINGS -> ringMarks
+        MeasureStep.BLACK -> listOfNotNull(blackMark)
     }
 
     private fun setMarks(step: MeasureStep, marks: List<ImageMark>) {
@@ -323,9 +347,11 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
             MeasureStep.SCALE -> scaleMarks = marks
             MeasureStep.CENTRE -> centreMark = marks.firstOrNull()
             MeasureStep.RINGS -> ringMarks = marks
+            MeasureStep.BLACK -> blackMark = marks.firstOrNull()
         }
         _state.value = _state.value.copy(marks = marks, failure = null)
         if (step == MeasureStep.RINGS) recomputeRings()
+        if (step == MeasureStep.BLACK) recomputeBlack()
     }
 
     private fun millimetresPerPixel(): Double? {
@@ -343,6 +369,19 @@ class CustomTargetViewModel(private val repository: RangeRepository) : ViewModel
      * That is what makes a ring correctable: moving its mark re-measures it, and nothing has to
      * remember which tap produced which number.
      */
+    /** The black's diameter, measured the same way a ring is. */
+    private fun recomputeBlack() {
+        val scale = millimetresPerPixel() ?: return
+        val centre = centreMark ?: return
+        val mark = blackMark
+        val diameter = mark?.let {
+            CustomTargets.diameterFromTap(centre.x, centre.y, it.x, it.y, scale)
+        }
+        _state.value = _state.value.copy(
+            draft = _state.value.draft.copy(blackDiameterMm = diameter),
+        )
+    }
+
     private fun recomputeRings() {
         val scale = millimetresPerPixel() ?: return
         val centre = centreMark ?: return

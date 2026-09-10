@@ -51,7 +51,21 @@ data class DetectionResult(
     val paperLevel: Double,
     val inkLevel: Double,
     val calibreKnown: Boolean,
+    /**
+     * How much the rectified photograph actually looks like the target that was selected, from -1
+     * to 1, or null when the face carries no aiming mark to check against.
+     *
+     * Everything else in this result is measured against geometry that is assumed, not seen. When
+     * the calibration is wrong the assumption is wrong too, and the detector will still happily
+     * return blobs - off the target, on a label, wherever they happen to fall. This is the number
+     * that says so.
+     */
+    val targetAgreement: Double? = null,
 ) {
+    /** True when the photograph plainly is not the face it was analysed as. */
+    val targetLooksWrong: Boolean
+        get() = targetAgreement != null && targetAgreement < HoleDetector.MIN_TARGET_AGREEMENT
+
     val uncertain: List<DetectedHole>
         get() = holes.filter { it.confidence < HoleDetector.LOW_CONFIDENCE }
 }
@@ -96,6 +110,16 @@ object HoleDetector {
 
     /** Below about this many pixels across, a hole cannot be told from noise at all. */
     const val MIN_HOLE_DIAMETER_PX = 6.0
+
+    /**
+     * Correlation below which the photograph is not the selected face at all.
+     *
+     * A calibration that locked onto the wrong thing - the edge of a table, a sheet of paper beside
+     * the target - produces a rectified image with the target somewhere off in a corner, and the
+     * detector then reports whatever happens to be hole-shaped in it. Nothing downstream can tell
+     * that from a real result, so it has to be caught here.
+     */
+    const val MIN_TARGET_AGREEMENT = 0.60
 
     /** Bridges noise-induced gaps in the torn ring without disturbing anything larger. */
     private const val BRIDGE_KERNEL_FRACTION = 0.12
@@ -229,7 +253,38 @@ object HoleDetector {
             paperLevel = levels.paper,
             inkLevel = levels.ink,
             calibreKnown = caliber != null,
+            targetAgreement = agreementWith(rectified, spec),
         )
+    }
+
+    /**
+     * How much the rectified photograph looks like the face it is being analysed as.
+     *
+     * Correlation against the synthesised aiming mark. A calibration that found the target gives a
+     * strongly positive number; one that measured a table edge or the wrong sheet gives something
+     * near zero, because the black disc the model expects is simply not where it is looking.
+     *
+     * Returns null when the face records no aiming mark, since there is then nothing of known size
+     * to compare - which is itself worth telling the shooter, because it also means ring-geometry
+     * calibration could not run.
+     */
+    fun agreementWith(rectified: RectifiedImage, spec: TargetSpec): Double? {
+        val levels = ExpectedTarget.estimateLevels(rectified, spec)
+        if (!levels.hasAimingMark) return null
+
+        val expected = ExpectedTarget.render(rectified, spec, levels)
+        if (expected.size() != rectified.image.size()) {
+            expected.release()
+            return null
+        }
+
+        val score = Mat()
+        Imgproc.matchTemplate(rectified.image, expected, score, Imgproc.TM_CCOEFF_NORMED)
+        val value = score.get(0, 0)?.firstOrNull()
+        score.release()
+        expected.release()
+
+        return value?.takeIf { it.isFinite() }
     }
 
     /**

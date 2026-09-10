@@ -27,6 +27,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.sp
+import kotlin.math.max
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -79,6 +87,7 @@ fun LiveScreen(
     caliber: Caliber?,
     speech: SpeechVerbosity,
     onFinished: (String) -> Unit,
+    onAnalysePhoto: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -115,6 +124,23 @@ fun LiveScreen(
     val executor = remember { Executors.newSingleThreadExecutor() }
     DisposableEffect(Unit) { onDispose { executor.shutdown() } }
 
+    // The camera, held in composition rather than in the view's tag: zoom has to be applied from a
+    // effect that knows when it changed, and fishing it back out of a View was how it got lost.
+    var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
+
+    // Linear zoom rather than a ratio, because the camera's maximum is not known until it is bound
+    // and was reported as 1.0 on the reported device - which pinned the slider and made it do
+    // nothing. A 0-to-1 control is always valid, and the ratio shown is read back from the camera.
+    LaunchedEffect(camera, state.linearZoom) {
+        val bound = camera ?: return@LaunchedEffect
+        runCatching {
+            bound.cameraControl.setLinearZoom(state.linearZoom)
+            bound.cameraInfo.zoomState.value?.let {
+                viewModel.setZoom(it.zoomRatio, it.maxZoomRatio)
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -139,25 +165,20 @@ fun LiveScreen(
                         .also { it.setAnalyzer(executor, LumaAnalyzer(viewModel::onFrame)) }
 
                     provider.unbindAll()
-                    val camera = provider.bindToLifecycle(
+                    camera = provider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
                         preview,
                         analysis,
                     )
-                    previewView.tag = camera
-                    camera.cameraInfo.zoomState.value?.let {
-                        viewModel.setZoom(it.zoomRatio, it.maxZoomRatio)
-                    }
                 }, ContextCompat.getMainExecutor(viewContext))
                 previewView
             },
-            update = { previewView ->
-                (previewView.tag as? androidx.camera.core.Camera)
-                    ?.cameraControl
-                    ?.setZoomRatio(state.zoomRatio)
-            },
         )
+
+        // Markers on the picture the shooter is actually looking at. The corner diagram is still
+        // there for the group's shape, but reading a hit off it means looking away from the target.
+        ShotOverlay(state, Modifier.fillMaxSize())
 
         StatusPanel(
             state = state,
@@ -166,36 +187,92 @@ fun LiveScreen(
                 .padding(Dimens.gutter),
         )
 
-        if (state.shots.isNotEmpty()) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(Dimens.gutter)
-                    .size(150.dp),
-                shape = RoundedCornerShape(Dimens.cardCorner),
-                color = Color.Black.copy(alpha = 0.55f),
-            ) {
-                TargetView(
-                    spec = state.spec ?: spec,
-                    layers = listOf(
-                        ShotLayer(
-                            label = "This string",
-                            shots = state.shots,
-                            colour = ScoreColors.hit,
-                        ),
-                    ),
-                )
-            }
-        }
-
-        Controls(
-            state = state,
-            viewModel = viewModel,
-            onFinished = onFinished,
-            modifier = Modifier
+        Column(
+            Modifier
                 .align(Alignment.BottomCenter)
                 .padding(Dimens.gutter),
-        )
+            horizontalAlignment = Alignment.Start,
+        ) {
+            if (state.shots.isNotEmpty()) {
+                Surface(
+                    modifier = Modifier
+                        .padding(bottom = Dimens.itemSpacing)
+                        .size(150.dp),
+                    shape = RoundedCornerShape(Dimens.cardCorner),
+                    color = Color.Black.copy(alpha = 0.55f),
+                ) {
+                    TargetView(
+                        spec = state.spec ?: spec,
+                        layers = listOf(
+                            ShotLayer(
+                                label = "This string",
+                                shots = state.shots,
+                                colour = ScoreColors.hit,
+                            ),
+                        ),
+                    )
+                }
+            }
+
+            Controls(
+                state = state,
+                viewModel = viewModel,
+                onFinished = onFinished,
+                onAnalysePhoto = onAnalysePhoto,
+            )
+        }
+    }
+}
+
+/**
+ * Draws each called shot over the camera preview.
+ *
+ * The analyser sees the sensor's own orientation and the preview shows it upright and centre-
+ * cropped to fill the screen, so both have to be undone to put a marker where the hole is. Shot
+ * positions arrive already corrected for the phone's drift, so they stay on their holes when the
+ * camera is nudged rather than sliding off.
+ */
+@Composable
+private fun ShotOverlay(state: LiveState, modifier: Modifier = Modifier) {
+    if (state.shotsInFrame.isEmpty() || state.frameWidth <= 0 || state.frameHeight <= 0) return
+    val textMeasurer = rememberTextMeasurer()
+
+    Canvas(modifier) {
+        // The frame as the preview shows it: rotated upright, then scaled to cover the view.
+        val quarterTurn = state.frameRotationDegrees == 90 || state.frameRotationDegrees == 270
+        val uprightWidth = if (quarterTurn) state.frameHeight else state.frameWidth
+        val uprightHeight = if (quarterTurn) state.frameWidth else state.frameHeight
+        if (uprightWidth <= 0 || uprightHeight <= 0) return@Canvas
+
+        val scale = max(size.width / uprightWidth, size.height / uprightHeight)
+        val originX = (size.width - uprightWidth * scale) / 2f
+        val originY = (size.height - uprightHeight * scale) / 2f
+
+        for (mark in state.shotsInFrame) {
+            val (ux, uy) = when (state.frameRotationDegrees) {
+                90 -> (state.frameHeight - mark.y) to mark.x
+                180 -> (state.frameWidth - mark.x) to (state.frameHeight - mark.y)
+                270 -> mark.y to (state.frameWidth - mark.x)
+                else -> mark.x to mark.y
+            }
+            val at = Offset(originX + ux.toFloat() * scale, originY + uy.toFloat() * scale)
+            if (at.x < 0f || at.y < 0f || at.x > size.width || at.y > size.height) continue
+
+            drawCircle(Color.Black.copy(alpha = 0.55f), radius = 22f, center = at)
+            drawCircle(ScoreColors.hit, radius = 18f, center = at, style = Stroke(width = 4f))
+
+            val layout = textMeasurer.measure(
+                mark.number.toString(),
+                TextStyle(fontSize = 13.sp, color = Color.White),
+            )
+            drawText(
+                layout,
+                topLeft = Offset(
+                    at.x - layout.size.width / 2f,
+                    at.y - layout.size.height / 2f,
+                ),
+            )
+        }
     }
 }
 
@@ -274,6 +351,7 @@ private fun Controls(
     state: LiveState,
     viewModel: LiveViewModel,
     onFinished: (String) -> Unit,
+    onAnalysePhoto: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Dimens.itemSpacing)) {
@@ -303,19 +381,17 @@ private fun Controls(
             CautionBanner("The view changed completely. Start a new target?")
         }
 
-        if (state.maximumZoom > 1f) {
-            Column {
-                Text(
-                    "Zoom ${"%.1f".format(state.zoomRatio)}x",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White,
-                )
-                Slider(
-                    value = state.zoomRatio,
-                    onValueChange = { viewModel.setZoom(it, state.maximumZoom) },
-                    valueRange = 1f..state.maximumZoom,
-                )
-            }
+        Column {
+            Text(
+                "Zoom ${String.format(Locale.ROOT, "%.1f", state.zoomRatio)}x",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White,
+            )
+            Slider(
+                value = state.linearZoom,
+                onValueChange = viewModel::setLinearZoom,
+                valueRange = 0f..1f,
+            )
         }
 
         // Changing target or re-measuring used to mean walking off the firing point to edit a
@@ -382,6 +458,24 @@ private fun Controls(
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                 ) {
                     Text("Finish")
+                }
+            }
+
+            // Live tracking calls a shot within a millimetre or two; a photograph of the same face
+            // measures it far better, and only a photograph can be reviewed hole by hole. Saving
+            // the string first means the two can be compared afterwards rather than one replacing
+            // the other.
+            if (state.shots.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = {
+                        viewModel.save { onAnalysePhoto() }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = Dimens.touchTargetRange),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                ) {
+                    Text("Save + photo")
                 }
             }
 

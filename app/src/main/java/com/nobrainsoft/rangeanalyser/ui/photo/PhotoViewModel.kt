@@ -47,7 +47,22 @@ data class PhotoState(
     val busy: Boolean = false,
     val message: String? = null,
     val canUndo: Boolean = false,
-)
+    /** Set when the shooter asked to calibrate again, overriding a saved calibration. */
+    val forceWizard: Boolean = false,
+) {
+    /**
+     * True when the photograph does not look like the selected face.
+     *
+     * Reported from a range: a calibration that locked onto a table edge produced a rectified image
+     * with the target off in a corner, and five confident "holes" on a printed warning label. The
+     * detector cannot tell that from a real result; this can.
+     */
+    val calibrationSuspect: Boolean get() = detection?.targetLooksWrong == true
+
+    /** True when the face records no aiming mark, so the calibration cannot be checked at all. */
+    val cannotVerify: Boolean
+        get() = detection != null && detection.targetAgreement == null
+}
 
 /**
  * Photo analysis, from picking an image to a reviewed set of shots.
@@ -107,7 +122,21 @@ class PhotoViewModel(
         detect()
     }
 
+    /** Drops the calibration and returns to the wizard, whatever the profile has saved. */
+    fun recalibrate() {
+        calibration = null
+        _state.value = _state.value.copy(
+            stage = PhotoStage.CALIBRATE,
+            forceWizard = true,
+            detection = null,
+            rectified = null,
+            shots = emptyList(),
+            message = null,
+        )
+    }
+
     fun useSavedCalibration(saved: SavedCalibration): Boolean {
+        if (_state.value.forceWizard) return false
         val homography = saved.homography ?: return false
         calibration = CalibrationAttempt(
             method = saved.method,
@@ -184,6 +213,13 @@ class PhotoViewModel(
     }
 
     private fun summarise(result: DetectionResult, count: Int): String = buildString {
+        if (result.targetLooksWrong) {
+            append(
+                "This photograph does not look like the target that was selected, so these " +
+                    "positions are measured against geometry that is not in the picture. " +
+                    "Calibrate again before trusting anything here. ",
+            )
+        }
         append("Found $count hole${if (count == 1) "" else "s"}.")
         val doubtful = result.uncertain.size
         if (doubtful > 0) append(" $doubtful need a look.")

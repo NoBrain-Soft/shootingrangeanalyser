@@ -36,8 +36,17 @@ data class LiveState(
     val lastCall: String = "",
     val status: String = "Point the camera at the target and zoom in.",
     val feasibility: LiveFeasibility.Assessment? = null,
+    /** What the camera reports it actually reached, for the label and for feasibility. */
     val zoomRatio: Float = 1f,
     val maximumZoom: Float = 1f,
+    /**
+     * The zoom control's own position, from none to as much as this camera has.
+     *
+     * Driving the camera by ratio needs its maximum, which is not known until it is bound and came
+     * back as 1.0 on the reported device - pinning the slider at one end and making it do nothing.
+     * Linear zoom is always valid, whatever the camera turns out to be capable of.
+     */
+    val linearZoom: Float = 0f,
     val stats: GroupStats? = null,
     val totalScore: String = "",
     val calibrated: Boolean = false,
@@ -45,9 +54,23 @@ data class LiveState(
     val targetChanged: Boolean = false,
     /** The face being scored against, which can be swapped without leaving the session. */
     val spec: TargetSpec? = null,
+    /**
+     * Where each shot currently sits in the analyser's own frame, so the preview can mark them.
+     *
+     * Kept in frame pixels rather than millimetres because that is what can be mapped onto what the
+     * shooter is looking at, and it already carries the drift correction - so the markers stay on
+     * their holes when the phone is nudged.
+     */
+    val shotsInFrame: List<FramePoint> = emptyList(),
+    val frameWidth: Int = 0,
+    val frameHeight: Int = 0,
+    val frameRotationDegrees: Int = 0,
 ) {
     val shotCount: Int get() = shots.count { !it.excluded }
 }
+
+/** A point in the analyser's frame, with the shot number to label it. */
+data class FramePoint(val x: Double, val y: Double, val number: Int)
 
 /**
  * Runs a live session.
@@ -72,6 +95,10 @@ class LiveViewModel(
     private var speech: SpeechVerbosity = SpeechVerbosity.FULL
     private var startedAtMs: Long = 0L
     private var pendingArm = false
+    private var imageToTargetMm: Transform2d? = null
+    private var frameWidth = 0
+    private var frameHeight = 0
+    private var frameRotation = 0
 
     fun prepare(
         profile: Profile,
@@ -90,7 +117,8 @@ class LiveViewModel(
         // used to work out the scale.
         val saved = profile.calibration
         if (saved?.homography != null) {
-            watcher = ShotWatcher(Transform2d.of(saved.homography!!), caliber)
+            imageToTargetMm = Transform2d.of(saved.homography!!)
+            watcher = ShotWatcher(imageToTargetMm!!, caliber)
             _state.value = _state.value.copy(
                 calibrated = true,
                 status = "Calibration ready. Frame the target and start watching.",
@@ -102,6 +130,11 @@ class LiveViewModel(
     fun setZoom(ratio: Float, maximum: Float) {
         _state.value = _state.value.copy(zoomRatio = ratio, maximumZoom = maximum)
         updateFeasibility()
+    }
+
+    /** Moves the zoom control. The camera is driven from this, and reports back what it managed. */
+    fun setLinearZoom(fraction: Float) {
+        _state.value = _state.value.copy(linearZoom = fraction.coerceIn(0f, 1f))
     }
 
     /**
@@ -125,8 +158,11 @@ class LiveViewModel(
     }
 
     /** Called on the camera thread for every frame. The [Mat] must not be kept. */
-    fun onFrame(luma: Mat, timestampMs: Long) {
+    fun onFrame(luma: Mat, timestampMs: Long, rotationDegrees: Int) {
         val current = watcher ?: calibrateFrom(luma) ?: return
+        frameWidth = luma.cols()
+        frameHeight = luma.rows()
+        frameRotation = rotationDegrees
 
         if (pendingArm) {
             pendingArm = false
@@ -151,6 +187,40 @@ class LiveViewModel(
                 _state.value = _state.value.copy(skipped = null)
             }
         }
+
+        refreshOverlay(current)
+    }
+
+    /**
+     * Recomputes where each shot appears in the frame the shooter is looking at.
+     *
+     * Positions are stored in target millimetres, which do not move; the phone does. Mapping back
+     * through the calibration and adding the watcher's own alignment shift puts each marker over
+     * the hole it belongs to rather than over where the target used to be.
+     */
+    private fun refreshOverlay(watcher: ShotWatcher) {
+        val toImage = imageToTargetMm?.inverse() ?: return
+        val drift = watcher.alignmentShift
+        val marks = _state.value.shots
+            .filterNot { it.excluded }
+            .mapIndexed { index, shot ->
+                val point = toImage.toImagePoint(shot.position)
+                FramePoint(point.x + drift.x, point.y + drift.y, index + 1)
+            }
+
+        val current = _state.value
+        if (current.shotsInFrame == marks &&
+            current.frameWidth == frameWidth &&
+            current.frameRotationDegrees == frameRotation
+        ) {
+            return
+        }
+        _state.value = current.copy(
+            shotsInFrame = marks,
+            frameWidth = frameWidth,
+            frameHeight = frameHeight,
+            frameRotationDegrees = frameRotation,
+        )
     }
 
     private fun record(outcome: FrameOutcome.Shots) {
@@ -248,6 +318,7 @@ class LiveViewModel(
     fun recalibrate() {
         watcher?.reset()
         watcher = null
+        imageToTargetMm = null
         pendingArm = false
         _state.value = _state.value.copy(
             armed = false,
@@ -318,6 +389,7 @@ class LiveViewModel(
                 return null
             }
 
+        imageToTargetMm = attempt.transform
         val created = ShotWatcher(attempt.transform, caliber)
         watcher = created
         _state.value = _state.value.copy(

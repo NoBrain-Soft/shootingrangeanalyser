@@ -247,6 +247,28 @@ fun CustomTargetEditorScreen(targetId: String?, onDone: () -> Unit) {
 
             EvenRingEntry(onApply = viewModel::setEvenRings)
 
+            // Without this the app has nothing of known size to find in a photograph, and
+            // calibration falls back to hunting for the sheet outline - which on a table with
+            // other paper on it locks onto the wrong rectangle.
+            if (state.draft.blackDiameterMm == null) {
+                CautionBanner(
+                    "No aiming mark recorded. The app measures a target by finding its black and " +
+                        "comparing it against a known size, so without this it has to guess from " +
+                        "the paper's outline instead - which is what goes wrong on a cluttered " +
+                        "bench. Measure it, or enter it below.",
+                )
+            }
+            StepperField(
+                label = "Black aiming mark across (mm)",
+                value = state.draft.blackDiameterMm ?: 0.0,
+                step = 1.0,
+                range = 0.0..2000.0,
+                onValueChange = { black ->
+                    viewModel.update { it.copy(blackDiameterMm = black.takeIf { d -> d > 0.0 }) }
+                },
+                supporting = "Zero if the face has no black area",
+            )
+
             StepperField(
                 label = "Highest ring scores",
                 value = state.draft.highestRingValue.toDouble(),
@@ -376,7 +398,8 @@ private fun MeasureStepScreen(
                         Text(
                             when (state.step) {
                                 MeasureStep.RINGS ->
-                                    "Done - ${state.draft.ringDiametersMm.size} rings"
+                                    "Next - ${state.draft.ringDiametersMm.size} rings"
+                                MeasureStep.BLACK -> "Done"
                                 else -> "Next"
                             },
                         )
@@ -441,6 +464,7 @@ private fun MeasureStepScreen(
                         markLabels = when (state.step) {
                             MeasureStep.SCALE -> listOf("one edge", "the other")
                             MeasureStep.CENTRE -> listOf("centre")
+                            MeasureStep.BLACK -> listOf("edge of the black")
                             else -> emptyList()
                         },
                     )
@@ -455,6 +479,7 @@ private fun stepTitle(step: MeasureStep): String = when (step) {
     MeasureStep.SCALE -> "Set the scale"
     MeasureStep.CENTRE -> "Mark the centre"
     MeasureStep.RINGS -> "Mark the rings"
+    MeasureStep.BLACK -> "Mark the black"
 }
 
 private fun stepInstruction(step: MeasureStep): String = when (step) {
@@ -466,6 +491,9 @@ private fun stepInstruction(step: MeasureStep): String = when (step) {
         "Put a mark on the exact centre of the target."
     MeasureStep.RINGS ->
         "Tap the outer edge of each scoring ring. Order does not matter."
+    MeasureStep.BLACK ->
+        "Tap the outer edge of the black aiming mark. This is what the app measures the target " +
+            "by, so it is worth getting right - skip it only if the face has no black at all."
 }
 
 @Composable
