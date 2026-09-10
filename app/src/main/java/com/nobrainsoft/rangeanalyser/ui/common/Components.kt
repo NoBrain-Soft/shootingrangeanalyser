@@ -208,6 +208,7 @@ fun StepperField(
     step: Double = 1.0,
     range: ClosedFloatingPointRange<Double> = 0.0..1000.0,
     suffix: String = "",
+    supporting: String? = null,
     format: (Double) -> String = { if (it % 1.0 == 0.0) it.toInt().toString() else String.format("%.2f", it) },
 ) {
     val buttonSize = if (LocalRangeMode.current) Dimens.touchTargetRange else Dimens.touchTarget
@@ -218,6 +219,13 @@ fun StepperField(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        supporting?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Row(
             Modifier.fillMaxWidth().padding(top = 6.dp),
             verticalAlignment = Alignment.CenterVertically,

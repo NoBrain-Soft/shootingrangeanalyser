@@ -153,9 +153,148 @@ class ShotWatcherTest {
 
         val shot = PointMm(-30.0, -30.0)
         val reported = mutableListOf<LiveShot>()
-        repeat(5) { frame -> session.collect(listOf(shot), 400L + frame * 100L, reported) }
+        // A disturbance resets the settling count, so recovery costs a few frames of stillness
+        // before the confirmation frames start counting again - about a fifth of a second at 30 fps.
+        repeat(10) { frame -> session.collect(listOf(shot), 400L + frame * 100L, reported) }
 
         assertEquals(1, reported.size, "the watcher must recover once the view clears")
+        session.release()
+    }
+
+    @Test
+    fun `the light changing is not a shot`() {
+        // Reported from a range: shots appearing by themselves as the light changed. Auto-exposure
+        // hunting, a cloud, or a lamp switching on moves every pixel at once - which is exactly what
+        // comparing high-pass detail rather than raw pixels is meant to survive.
+        val session = session()
+        session.armWith(emptyList())
+
+        val exposures = listOf(238.0, 210.0, 250.0, 195.0, 238.0, 225.0, 205.0, 245.0)
+        val outcomes = exposures.mapIndexed { frame, paper ->
+            session.feed(emptyList(), frame * 100L, paperGray = paper)
+        }
+
+        assertTrue(
+            outcomes.none { it is FrameOutcome.Shots },
+            "a change in exposure invented shots: $outcomes",
+        )
+        session.release()
+    }
+
+    @Test
+    fun `a shadow moving across the target is not a shot`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        val outcomes = (0..7).map { frame ->
+            session.feed(emptyList(), frame * 100L, vignette = 0.1 * frame)
+        }
+
+        assertTrue(
+            outcomes.none { it is FrameOutcome.Shots },
+            "drifting shade invented shots: $outcomes",
+        )
+        session.release()
+    }
+
+    @Test
+    fun `a real shot is still called when the light is changing`() {
+        // The other half of the bargain: rejecting lighting must not cost us the shot itself.
+        val session = session()
+        session.armWith(emptyList())
+
+        val shot = PointMm(20.0, -25.0)
+        val reported = mutableListOf<LiveShot>()
+        val exposures = listOf(238.0, 232.0, 244.0, 228.0, 240.0, 236.0, 230.0, 242.0, 234.0)
+        exposures.forEachIndexed { frame, paper ->
+            session.collect(listOf(shot), frame * 100L, reported, paperGray = paper)
+        }
+
+        assertEquals(1, reported.size, "expected the shot, got ${reported.map { it.positionMm }}")
+        assertEquals(shot.x, reported.single().positionMm.x, 5.0)
+        session.release()
+    }
+
+    @Test
+    fun `a target being carried about in front of the camera is not shot at`() {
+        // Holding a target up to the lens and moving it around: every frame is a large shift.
+        val session = session()
+        session.armWith(emptyList())
+
+        val outcomes = (1..10).map { frame ->
+            val sway = if (frame % 2 == 0) 34.0 else -29.0
+            session.feed(emptyList(), frame * 100L, shiftPx = Point(sway, sway * 0.6))
+        }
+
+        assertTrue(
+            outcomes.none { it is FrameOutcome.Shots },
+            "a target being waved about invented shots: $outcomes",
+        )
+        session.release()
+    }
+
+    @Test
+    fun `the same hole is not called twice after the reference is rebuilt`() {
+        val session = session()
+        session.armWith(emptyList())
+
+        val shot = PointMm(-15.0, 35.0)
+        val reported = mutableListOf<LiveShot>()
+        // Long after the shot is called, with the light moving underneath it.
+        repeat(20) { frame ->
+            session.collect(
+                listOf(shot),
+                frame * 100L,
+                reported,
+                paperGray = if (frame % 3 == 0) 246.0 else 230.0,
+            )
+        }
+
+        assertEquals(1, reported.size, "one hole, one call: got ${reported.map { it.positionMm }}")
+        session.release()
+    }
+
+    @Test
+    fun `resetting while frames are arriving does not crash`() {
+        // arm/disarm/reset are called from the UI thread while onFrame runs on the camera thread,
+        // and they share Mats holding native memory. Unsynchronised, this frees the reference frame
+        // under the camera thread and the process dies in native code. A regression here does not
+        // fail politely - it takes the JVM with it - which is the point of pinning it down.
+        val session = session()
+        session.armWith(emptyList())
+        val frame = session.frameOf(listOf(PointMm(5.0, 5.0)))
+
+        val watcher = session.watcher
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val camera = Thread {
+            runCatching {
+                var tick = 0L
+                while (!stop.get()) {
+                    watcher.onFrame(frame, tick)
+                    tick += 50
+                }
+            }.onFailure { failure.set(it) }
+        }
+        val ui = Thread {
+            runCatching {
+                repeat(400) {
+                    watcher.reset()
+                    watcher.arm(frame)
+                    watcher.disarm()
+                }
+            }.onFailure { failure.set(it) }
+        }
+
+        camera.start()
+        ui.start()
+        ui.join()
+        stop.set(true)
+        camera.join()
+
+        failure.get()?.let { throw AssertionError("concurrent access failed", it) }
+        frame.release()
         session.release()
     }
 
@@ -269,13 +408,19 @@ class ShotWatcherTest {
         lateinit var watcher: ShotWatcher
         private val frames = mutableListOf<Mat>()
 
-        private fun render(holes: List<PointMm>): Mat {
+        private fun render(
+            holes: List<PointMm>,
+            paperGray: Double = 238.0,
+            vignette: Double = 0.0,
+        ): Mat {
             val rendered = SyntheticTarget.render(
                 spec,
                 SyntheticTarget.Config(
                     pixelsPerMm = pixelsPerMm,
                     holes = holes.map { SyntheticTarget.Hole(it, caliber.bulletDiameterMm) },
                     noiseSigma = 2.0,
+                    paperGray = paperGray,
+                    vignette = vignette,
                 ),
             )
             val image = rendered.image
@@ -286,10 +431,16 @@ class ShotWatcherTest {
             return image
         }
 
+        /** A frame the caller owns and releases itself, for driving the watcher directly. */
+        fun frameOf(holes: List<PointMm>): Mat = render(holes).clone()
+
         fun armWith(holes: List<PointMm>) {
             // render() builds the watcher on first call, since it is what knows the true transform.
             val frame = render(holes)
             watcher.arm(frame)
+            // The watcher waits for the picture to settle before it will call anything, so give it
+            // the still frames it asks for. A real session gets these while the shooter takes aim.
+            repeat(SETTLING_FRAMES) { watcher.onFrame(render(holes), -1L) }
         }
 
         fun feed(
@@ -298,8 +449,10 @@ class ShotWatcherTest {
             shiftPx: Point = Point(0.0, 0.0),
             occlusion: Boolean = false,
             wholesaleChange: Boolean = false,
+            paperGray: Double = 238.0,
+            vignette: Double = 0.0,
         ): FrameOutcome {
-            var frame = render(holes)
+            var frame = render(holes, paperGray, vignette)
             if (shiftPx.x != 0.0 || shiftPx.y != 0.0) {
                 frame = shifted(frame, shiftPx)
                 frames += frame
@@ -335,8 +488,9 @@ class ShotWatcherTest {
             timestampMs: Long,
             into: MutableList<LiveShot>,
             shiftPx: Point = Point(0.0, 0.0),
+            paperGray: Double = 238.0,
         ) {
-            val outcome = feed(holes, timestampMs, shiftPx)
+            val outcome = feed(holes, timestampMs, shiftPx, paperGray = paperGray)
             if (outcome is FrameOutcome.Shots) into += outcome.shots
         }
 
@@ -361,6 +515,11 @@ class ShotWatcherTest {
             frames.forEach { it.release() }
             frames.clear()
             watcher.reset()
+        }
+
+        companion object {
+            /** Matches WatchSettings.framesToSettle. */
+            const val SETTLING_FRAMES = 3
         }
     }
 }

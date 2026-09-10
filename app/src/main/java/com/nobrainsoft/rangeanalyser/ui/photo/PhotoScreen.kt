@@ -8,6 +8,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
@@ -39,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,6 +64,9 @@ import com.nobrainsoft.rangeanalyser.ui.rangeViewModel
 import com.nobrainsoft.rangeanalyser.ui.theme.Dimens
 import com.nobrainsoft.rangeanalyser.ui.theme.ScoreColors
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Photo analysis, end to end.
@@ -128,10 +134,60 @@ fun PhotoScreen(
 @Composable
 private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, onBack: () -> Unit) {
     var pendingCapture by remember { mutableStateOf<Uri?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var failure by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
+    /**
+     * Reads the picked photograph.
+     *
+     * Off the main thread, because decoding a 50-megapixel phone photograph and converting it for
+     * OpenCV takes long enough to freeze the UI. Wrapped, because every step of it can fail for
+     * reasons outside the app's control - a URI another app has already revoked, a format that
+     * cannot be decoded, a picture too large for the heap - and none of those are worth a crash.
+     */
     fun load(uri: Uri?) {
-        val bitmap = uri?.let { decode(context, it) } ?: return
-        onImage(ImageBridge.greyscaleOf(bitmap))
+        if (uri == null) return
+        if (!context.appContainer.openCvAvailable) {
+            failure = "Image analysis is unavailable on this device - the OpenCV libraries did " +
+                "not load, so a photograph cannot be measured."
+            return
+        }
+        busy = true
+        failure = null
+        scope.launch {
+            val outcome = withContext(Dispatchers.Default) {
+                runCatching {
+                    val bitmap = decode(context, uri)
+                        ?: error("That picture could not be read.")
+                    try {
+                        ImageBridge.greyscaleOf(bitmap)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+            }
+            busy = false
+            outcome
+                .onSuccess { image ->
+                    if (image.empty()) {
+                        image.release()
+                        failure = "That picture came through empty. Try taking it again."
+                    } else {
+                        onImage(image)
+                    }
+                }
+                .onFailure { thrown ->
+                    Log.w("RangeAnalyser", "could not load the target photograph", thrown)
+                    failure = when (thrown) {
+                        is OutOfMemoryError ->
+                            "That photograph is too large for this device to open."
+                        else ->
+                            thrown.message?.takeIf { it.isNotBlank() }
+                                ?: "That picture could not be read."
+                    }
+                }
+        }
     }
 
     val pickImage = rememberLauncherForActivityResult(
@@ -160,16 +216,33 @@ private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, o
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            failure?.let { CautionBanner(it) }
+
+            if (busy) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(24.dp))
+                    Text("Reading the photograph...", modifier = Modifier.padding(start = 12.dp))
+                }
+            }
+
             Button(
+                enabled = !busy,
                 onClick = {
-                    val file = File(context.appContainer.files.targetsDirectory, "capture.jpg")
-                    val uri = FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.fileprovider",
-                        file,
-                    )
-                    pendingCapture = uri
-                    takePicture.launch(uri)
+                    // Every part of this can fail on a device without a camera app, or where the
+                    // provider is misconfigured; neither is worth taking the app down for.
+                    runCatching {
+                        val file = File(context.appContainer.files.targetsDirectory, "capture.jpg")
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file,
+                        )
+                        pendingCapture = uri
+                        takePicture.launch(uri)
+                    }.onFailure {
+                        Log.w("RangeAnalyser", "could not start the camera", it)
+                        failure = "No camera app would open. Choose an existing photo instead."
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -180,7 +253,13 @@ private fun PickStep(context: Context, onImage: (org.opencv.core.Mat) -> Unit, o
             }
 
             OutlinedButton(
-                onClick = { pickImage.launch("image/*") },
+                enabled = !busy,
+                onClick = {
+                    runCatching { pickImage.launch("image/*") }.onFailure {
+                        Log.w("RangeAnalyser", "no gallery app", it)
+                        failure = "No app on this phone offered a picture to open."
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = Dimens.touchTargetRange),
@@ -346,12 +425,23 @@ private fun decode(context: Context, uri: Uri): Bitmap? {
         BitmapFactory.decodeStream(it, null, bounds)
     }
 
+    // A failed bounds pass leaves these at zero, and the loop below would then never subsample -
+    // handing a full-resolution phone photograph to the decoder and running the heap out.
+    val width = bounds.outWidth
+    val height = bounds.outHeight
+    if (width <= 0 || height <= 0) return null
+
     var sample = 1
-    while (bounds.outWidth / sample > MAX_DIMENSION || bounds.outHeight / sample > MAX_DIMENSION) {
+    while (width / sample > MAX_DIMENSION || height / sample > MAX_DIMENSION) {
         sample *= 2
     }
 
-    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = sample
+        // OpenCV needs a readable configuration; without this a modern gallery can hand back a
+        // hardware bitmap whose pixels cannot be addressed at all.
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
     return context.contentResolver.openInputStream(uri)?.use {
         BitmapFactory.decodeStream(it, null, options)
     }

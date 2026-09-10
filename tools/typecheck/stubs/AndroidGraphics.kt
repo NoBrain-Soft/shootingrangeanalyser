@@ -10,6 +10,10 @@ import java.io.OutputStream
 class Bitmap {
     val width: Int get() = stub()
     val height: Int get() = stub()
+
+    /** Nullable in the real API: a hardware bitmap reports no configuration at all. */
+    val config: Config? get() = stub()
+    fun copy(config: Config, isMutable: Boolean): Bitmap? = stub()
     fun compress(format: CompressFormat, quality: Int, stream: OutputStream): Boolean = stub()
     fun recycle(): Unit = stub()
 

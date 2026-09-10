@@ -157,6 +157,9 @@ fun RangeNavGraph(navController: NavHostController = rememberNavController()) {
                 onDone = navController::popBackStack,
                 onAddFirearm = { navController.navigate(Routes.firearmEdit(null)) },
                 onAddAmmo = { navController.navigate(Routes.ammoEdit(null)) },
+                onEditFirearm = { navController.navigate(Routes.firearmEdit(it)) },
+                onEditAmmo = { navController.navigate(Routes.ammoEdit(it)) },
+                onEditTargets = { navController.navigate(Routes.TARGETS) },
             )
         }
 

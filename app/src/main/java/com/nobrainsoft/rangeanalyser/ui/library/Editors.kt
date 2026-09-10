@@ -20,14 +20,17 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -41,16 +44,19 @@ import com.nobrainsoft.rangeanalyser.core.model.DragModel
 import com.nobrainsoft.rangeanalyser.core.model.Firearm
 import com.nobrainsoft.rangeanalyser.core.model.FirearmType
 import com.nobrainsoft.rangeanalyser.core.model.Handedness
+import com.nobrainsoft.rangeanalyser.core.model.MuzzleVelocity
 import com.nobrainsoft.rangeanalyser.core.model.Profile
 import com.nobrainsoft.rangeanalyser.core.model.ShootingPosition
 import com.nobrainsoft.rangeanalyser.core.model.SightType
 import com.nobrainsoft.rangeanalyser.core.model.SupportType
+import com.nobrainsoft.rangeanalyser.core.model.VelocityConfidence
 import com.nobrainsoft.rangeanalyser.ui.common.LabeledTextField
 import com.nobrainsoft.rangeanalyser.ui.common.PickerField
 import com.nobrainsoft.rangeanalyser.ui.common.StepperField
 import com.nobrainsoft.rangeanalyser.ui.common.enumLabel
 import com.nobrainsoft.rangeanalyser.ui.rangeViewModel
 import com.nobrainsoft.rangeanalyser.ui.theme.Dimens
+import kotlin.math.roundToInt
 
 @Composable
 fun FirearmEditorScreen(firearmId: String?, onDone: () -> Unit) {
@@ -113,85 +119,133 @@ fun FirearmEditorScreen(firearmId: String?, onDone: () -> Unit) {
             options = SightType.entries,
             optionLabel = { enumLabel(it.name) },
             onSelect = {
-                viewModel.updateFirearm(current.copy(sight = current.sight.copy(type = it)))
-            },
-        )
-
-        // The one field people get wrong, so it gets an explanation rather than a bare number.
-        Text(
-            "Sight adjustment",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(top = Dimens.itemSpacing),
-        )
-        Text(
-            "How far one click moves the point of impact. It is printed on the turret or in the " +
-                "manual - usually as a fraction of a MOA, a fraction of a mil, or a distance at a " +
-                "reference range. Getting the unit wrong is the commonest reason sight advice " +
-                "sends people the wrong way.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        val click = current.sight.clickValue ?: ClickValue.QUARTER_MOA
-        StepperField(
-            label = "Click size",
-            value = click.amount,
-            step = 0.05,
-            range = 0.01..50.0,
-            onValueChange = {
+                // Switching to a sight that has nothing to turn drops the click settings with it,
+                // rather than leaving a stale number behind that would produce confident nonsense.
+                val sight = current.sight.copy(type = it)
                 viewModel.updateFirearm(
-                    current.copy(sight = current.sight.copy(clickValue = click.copy(amount = it))),
-                )
-            },
-            format = { String.format(java.util.Locale.ROOT, "%.2f", it) },
-        )
-
-        PickerField(
-            label = "Click unit",
-            selected = click.unit,
-            options = ClickUnit.entries,
-            optionLabel = {
-                when (it) {
-                    ClickUnit.MOA -> "MOA"
-                    ClickUnit.MIL -> "Milliradian"
-                    ClickUnit.MM_AT_100M -> "mm at 100 m"
-                    ClickUnit.INCH_AT_100YD -> "inch at 100 yd"
-                }
-            },
-            onSelect = {
-                viewModel.updateFirearm(
-                    current.copy(sight = current.sight.copy(clickValue = click.copy(unit = it))),
-                )
-            },
-        )
-
-        StepperField(
-            label = "Zero distance (m)",
-            value = current.zeroDistanceM ?: 100.0,
-            step = 5.0,
-            range = 1.0..1000.0,
-            onValueChange = { viewModel.updateFirearm(current.copy(zeroDistanceM = it)) },
-        )
-
-        StepperField(
-            label = "Sight height above bore (mm)",
-            value = current.sight.opticHeightMm ?: 40.0,
-            step = 1.0,
-            range = 0.0..150.0,
-            onValueChange = {
-                viewModel.updateFirearm(
-                    current.copy(sight = current.sight.copy(opticHeightMm = it)),
+                    current.copy(
+                        sight = if (it == SightType.NONE) sight.copy(clickValue = null) else sight,
+                    ),
                 )
             },
         )
 
         StepperField(
             label = "Barrel length (mm)",
-            value = current.barrelLengthMm ?: 600.0,
+            value = current.barrelLengthMm ?: defaultBarrelLengthMm(current.type),
             step = 10.0,
             range = 50.0..1200.0,
             onValueChange = { viewModel.updateFirearm(current.copy(barrelLengthMm = it)) },
+            supporting = "Used to estimate what your ammunition is doing",
         )
+
+        // Everything below is only meaningful for a sight you can actually adjust. Shown to
+        // everyone, it was the most complicated part of setting up a gun and pure noise for irons
+        // and for open sights that no click count applies to.
+        if (current.sight.type != SightType.NONE) {
+            val adjustable = current.sight.clickValue != null
+
+            ListItem(
+                headlineContent = { Text("This sight has click adjustments") },
+                supportingContent = {
+                    Text(
+                        if (adjustable) {
+                            "The app can then work out how many clicks to move your zero."
+                        } else {
+                            "Leave off for fixed sights. Everything else still works - you just " +
+                                "get the group's offset in millimetres instead of a click count."
+                        },
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = adjustable,
+                        onCheckedChange = { wanted ->
+                            viewModel.updateFirearm(
+                                current.copy(
+                                    sight = current.sight.copy(
+                                        clickValue = if (wanted) ClickValue.QUARTER_MOA else null,
+                                    ),
+                                ),
+                            )
+                        },
+                    )
+                },
+            )
+
+            current.sight.clickValue?.let { click ->
+                // The one field people get wrong, so it gets an explanation rather than a bare
+                // number.
+                Text(
+                    "How far one click moves the point of impact. It is printed on the turret or " +
+                        "in the manual - usually as a fraction of a MOA, a fraction of a mil, or " +
+                        "a distance at a reference range. Getting the unit wrong is the commonest " +
+                        "reason sight advice sends people the wrong way.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                StepperField(
+                    label = "Click size",
+                    value = click.amount,
+                    step = 0.05,
+                    range = 0.01..50.0,
+                    onValueChange = {
+                        viewModel.updateFirearm(
+                            current.copy(
+                                sight = current.sight.copy(clickValue = click.copy(amount = it)),
+                            ),
+                        )
+                    },
+                    format = { String.format(java.util.Locale.ROOT, "%.2f", it) },
+                )
+
+                PickerField(
+                    label = "Click unit",
+                    selected = click.unit,
+                    options = ClickUnit.entries,
+                    optionLabel = {
+                        when (it) {
+                            ClickUnit.MOA -> "MOA"
+                            ClickUnit.MIL -> "Milliradian"
+                            ClickUnit.MM_AT_100M -> "mm at 100 m"
+                            ClickUnit.INCH_AT_100YD -> "inch at 100 yd"
+                        }
+                    },
+                    onSelect = {
+                        viewModel.updateFirearm(
+                            current.copy(
+                                sight = current.sight.copy(clickValue = click.copy(unit = it)),
+                            ),
+                        )
+                    },
+                )
+
+                StepperField(
+                    label = "Zero distance (m)",
+                    value = current.zeroDistanceM ?: 100.0,
+                    step = 5.0,
+                    range = 1.0..1000.0,
+                    onValueChange = { viewModel.updateFirearm(current.copy(zeroDistanceM = it)) },
+                )
+
+                if (current.sight.type == SightType.SCOPE ||
+                    current.sight.type == SightType.RED_DOT
+                ) {
+                    StepperField(
+                        label = "Sight height above bore (mm)",
+                        value = current.sight.opticHeightMm ?: 40.0,
+                        step = 1.0,
+                        range = 0.0..150.0,
+                        onValueChange = {
+                            viewModel.updateFirearm(
+                                current.copy(sight = current.sight.copy(opticHeightMm = it)),
+                            )
+                        },
+                    )
+                }
+            }
+        }
 
         LabeledTextField(
             label = "Notes",
@@ -261,34 +315,9 @@ fun AmmoEditorScreen(ammoId: String?, onDone: () -> Unit) {
             onValueChange = { viewModel.updateAmmo(current.copy(bulletWeightGrains = it)) },
         )
 
-        StepperField(
-            label = "Muzzle velocity (m/s)",
-            value = current.muzzleVelocityMps ?: 800.0,
-            step = 5.0,
-            range = 50.0..1400.0,
-            onValueChange = { viewModel.updateAmmo(current.copy(muzzleVelocityMps = it)) },
-        )
-
-        // The field that unlocks the most useful coaching, so it says why it is worth filling in.
-        Text(
-            "Velocity consistency",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(top = Dimens.itemSpacing),
-        )
-        Text(
-            "If you have chronograph data, the standard deviation here lets the app work out how " +
-                "much of your vertical spread is the ammunition rather than you - which is the " +
-                "difference between practising harder and buying better ammunition.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        StepperField(
-            label = "Velocity SD (m/s)",
-            value = current.velocitySdMps ?: 0.0,
-            step = 0.5,
-            range = 0.0..60.0,
-            onValueChange = { viewModel.updateAmmo(current.copy(velocitySdMps = it)) },
-            format = { String.format(java.util.Locale.ROOT, "%.1f", it) },
+        VelocitySection(
+            ammo = current,
+            onChange = { viewModel.updateAmmo(it) },
         )
 
         StepperField(
@@ -329,6 +358,9 @@ fun ProfileEditorScreen(
     onDone: () -> Unit,
     onAddFirearm: () -> Unit,
     onAddAmmo: () -> Unit,
+    onEditFirearm: (String) -> Unit,
+    onEditAmmo: (String) -> Unit,
+    onEditTargets: () -> Unit,
 ) {
     val viewModel = rangeViewModel(key = "library") { LibraryViewModel(it.repository) }
     LaunchedEffect(profileId) { viewModel.loadProfile(profileId) }
@@ -380,6 +412,7 @@ fun ProfileEditorScreen(
                 viewModel.updateProfile(current.copy(firearmId = it.id, ammoId = keepAmmo))
             },
             onAddNew = onAddFirearm,
+            onEditSelected = selectedFirearm?.let { firearm -> { onEditFirearm(firearm.id) } },
         )
 
         PickerField(
@@ -390,6 +423,7 @@ fun ProfileEditorScreen(
             onSelect = { viewModel.updateProfile(current.copy(ammoId = it.id)) },
             placeholder = "Optional",
             onAddNew = onAddAmmo,
+            onEditSelected = current.ammoId?.let { id -> { onEditAmmo(id) } },
         )
 
         PickerField(
@@ -408,6 +442,7 @@ fun ProfileEditorScreen(
                     ),
                 )
             },
+            onAddNew = onEditTargets,
         )
 
         StepperField(
@@ -459,6 +494,118 @@ fun ProfileEditorScreen(
             )
         }
     }
+}
+
+/**
+ * Muzzle velocity, without demanding a chronograph.
+ *
+ * Asking outright for a number almost nobody can measure produced the worst possible outcome: a
+ * made-up figure the app then treated as fact. So the estimate is shown as an estimate, with the
+ * range it could plausibly be and where it came from, and the field for a real measurement only
+ * appears if the shooter says they have one.
+ */
+@Composable
+private fun VelocitySection(ammo: Ammo, onChange: (Ammo) -> Unit) {
+    val estimate = remember(ammo.caliberId, ammo.bulletWeightGrains) {
+        MuzzleVelocity.estimate(ammo.caliber(), ammo.bulletWeightGrains)
+    }
+    val measured = ammo.muzzleVelocityMps
+
+    Text(
+        "Speed",
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(top = Dimens.itemSpacing),
+    )
+
+    if (estimate != null && measured == null) {
+        Text(
+            String.format(
+                java.util.Locale.ROOT,
+                "Estimated at %.0f m/s, plausibly %.0f-%.0f.",
+                estimate.metresPerSecond,
+                estimate.plausibleLowMps,
+                estimate.plausibleHighMps,
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            estimate.basis + when (estimate.confidence) {
+                VelocityConfidence.TYPICAL ->
+                    " Close enough for working out how much of your vertical spread is the load."
+                VelocityConfidence.BROAD ->
+                    " This calibre covers very different loadings, so treat it loosely."
+                VelocityConfidence.GUN_DEPENDENT ->
+                    " Airgun velocity is a property of the gun, not the pellet - this is barely " +
+                        "more than a starting point."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else if (estimate == null && measured == null) {
+        Text(
+            "No reference figure for this calibre, so speed is left unknown rather than guessed. " +
+                "Coaching that needs it will say so instead of using a made-up number.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    ListItem(
+        headlineContent = { Text("I have chronograph figures") },
+        supportingContent = {
+            Text(
+                "A measured speed and, better still, its standard deviation. The SD is what lets " +
+                    "the app separate vertical spread the ammunition caused from spread you did.",
+            )
+        },
+        trailingContent = {
+            Switch(
+                checked = measured != null,
+                onCheckedChange = { wanted ->
+                    onChange(
+                        if (wanted) {
+                            ammo.copy(
+                                muzzleVelocityMps = estimate?.metresPerSecond?.let {
+                                    (it / 5.0).roundToInt() * 5.0
+                                } ?: 350.0,
+                            )
+                        } else {
+                            ammo.copy(muzzleVelocityMps = null, velocitySdMps = null)
+                        },
+                    )
+                },
+            )
+        },
+    )
+
+    if (measured != null) {
+        StepperField(
+            label = "Muzzle velocity (m/s)",
+            value = measured,
+            step = 5.0,
+            range = 50.0..1400.0,
+            onValueChange = { onChange(ammo.copy(muzzleVelocityMps = it)) },
+        )
+        StepperField(
+            label = "Velocity SD (m/s)",
+            value = ammo.velocitySdMps ?: 0.0,
+            step = 0.5,
+            range = 0.0..60.0,
+            onValueChange = { onChange(ammo.copy(velocitySdMps = it)) },
+            format = { String.format(java.util.Locale.ROOT, "%.1f", it) },
+            supporting = "Leave at zero if you only have an average",
+        )
+    }
+}
+
+/** A sensible starting barrel length, so the field is not a blank demand either. */
+private fun defaultBarrelLengthMm(type: FirearmType): Double = when (type) {
+    FirearmType.PISTOL, FirearmType.RIMFIRE_PISTOL, FirearmType.AIR_PISTOL -> 110.0
+    FirearmType.REVOLVER -> 150.0
+    FirearmType.SHOTGUN -> 710.0
+    FirearmType.AIR_RIFLE -> 450.0
+    FirearmType.RIMFIRE_RIFLE -> 500.0
+    FirearmType.CENTREFIRE_RIFLE -> 600.0
 }
 
 @Composable

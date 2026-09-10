@@ -6,14 +6,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -76,6 +79,14 @@ fun <T> PickerField(
     optionDescription: ((T) -> String?)? = null,
     placeholder: String = "Choose",
     onAddNew: (() -> Unit)? = null,
+    /**
+     * Opens the selected item for editing.
+     *
+     * Here rather than only in a library screen because this is where people look for it: having
+     * just chosen a gun and seen it is wrong, the next thing they want is to fix it, not to back
+     * out through two screens and find a list.
+     */
+    onEditSelected: (() -> Unit)? = null,
 ) {
     var open by remember { mutableStateOf(false) }
 
@@ -85,31 +96,44 @@ fun <T> PickerField(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = Dimens.touchTarget)
-                .padding(top = 4.dp)
-                .clickable { open = true },
-            shape = RoundedCornerShape(Dimens.cardCorner),
-            color = MaterialTheme.colorScheme.surfaceVariant,
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                Modifier.padding(horizontal = Dimens.gutter, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = Dimens.touchTarget)
+                    .clickable { open = true },
+                shape = RoundedCornerShape(Dimens.cardCorner),
+                color = MaterialTheme.colorScheme.surfaceVariant,
             ) {
-                Text(
-                    text = selected?.let(optionLabel) ?: placeholder,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = if (selected == null) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    modifier = Modifier.weight(1f),
-                )
-                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                Row(
+                    Modifier.padding(horizontal = Dimens.gutter, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = selected?.let(optionLabel) ?: placeholder,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (selected == null) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                }
+            }
+
+            if (onEditSelected != null && selected != null) {
+                IconButton(
+                    onClick = onEditSelected,
+                    modifier = Modifier.size(Dimens.touchTarget),
+                ) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit $label")
+                }
             }
         }
     }
