@@ -3,6 +3,8 @@ package com.nobrainsoft.rangeanalyser.camera
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -50,9 +52,47 @@ object PhotoLoader {
             // hardware bitmap whose pixels cannot be addressed at all.
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        return context.contentResolver.openInputStream(uri)?.use {
+        val decoded = context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, options)
-        }
+        } ?: return null
+
+        return applyExifRotation(context, uri, decoded)
+    }
+
+    /**
+     * Turns the decoded bitmap the way up the camera says it was taken.
+     *
+     * Phones almost always record the sensor's own orientation and note the rotation in EXIF rather
+     * than rotating the pixels. [BitmapFactory] ignores that, so a picture taken in portrait arrives
+     * on its side - which is how a target photographed upright came into the editor lying down.
+     */
+    private fun applyExifRotation(context: Context, uri: Uri, bitmap: Bitmap): Bitmap {
+        val degrees = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                when (
+                    ExifInterface(stream).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL,
+                    )
+                ) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+            } ?: 0f
+        }.getOrDefault(0f)
+
+        if (degrees == 0f) return bitmap
+
+        return runCatching {
+            val matrix = Matrix().apply { postRotate(degrees) }
+            val rotated = Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true,
+            )
+            if (rotated !== bitmap) bitmap.recycle()
+            rotated
+        }.getOrDefault(bitmap)
     }
 
     /**

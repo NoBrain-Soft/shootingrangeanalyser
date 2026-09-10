@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -55,6 +56,8 @@ import com.nobrainsoft.rangeanalyser.core.target.TargetSpec
 import com.nobrainsoft.rangeanalyser.ui.calibrate.CalibrationViewModel
 import com.nobrainsoft.rangeanalyser.ui.calibrate.CalibrationWizardScreen
 import com.nobrainsoft.rangeanalyser.ui.common.CautionBanner
+import com.nobrainsoft.rangeanalyser.ui.common.ImageMark
+import com.nobrainsoft.rangeanalyser.ui.common.MarkableImage
 import com.nobrainsoft.rangeanalyser.ui.common.ShotLayer
 import com.nobrainsoft.rangeanalyser.ui.common.TargetTap
 import com.nobrainsoft.rangeanalyser.ui.common.TargetView
@@ -341,24 +344,72 @@ private fun ReviewStep(
                 color = MaterialTheme.colorScheme.primary,
             )
 
+            // The photograph is the default view, and the reason is the reported failure: eleven
+            // holes, one found. Against a drawn diagram there is no way to tell a detector that
+            // missed the group from a calibration that put the target somewhere else entirely.
+            // Against the picture it is obvious at a glance.
+            var showPhoto by remember { mutableStateOf(true) }
+            val photo = state.rectified
+
+            if (photo != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = showPhoto,
+                        onClick = { showPhoto = true },
+                        label = { Text("Photo") },
+                    )
+                    FilterChip(
+                        selected = !showPhoto,
+                        onClick = { showPhoto = false },
+                        label = { Text("Target") },
+                    )
+                }
+            }
+
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                TargetView(
-                    spec = spec,
-                    layers = listOf(
-                        ShotLayer(
-                            label = "Detected",
-                            shots = state.shots,
-                            colour = ScoreColors.hit,
+                if (photo != null && showPhoto && state.rectifiedPixelsPerMm > 0.0) {
+                    val toMark = { shot: com.nobrainsoft.rangeanalyser.core.model.Shot ->
+                        ImageMark(
+                            x = state.rectifiedCentreX + shot.position.x * state.rectifiedPixelsPerMm,
+                            y = state.rectifiedCentreY - shot.position.y * state.rectifiedPixelsPerMm,
+                        )
+                    }
+                    val toMm = { mark: ImageMark ->
+                        com.nobrainsoft.rangeanalyser.core.geometry.PointMm(
+                            x = (mark.x - state.rectifiedCentreX) / state.rectifiedPixelsPerMm,
+                            y = (state.rectifiedCentreY - mark.y) / state.rectifiedPixelsPerMm,
+                        )
+                    }
+                    MarkableImage(
+                        image = photo,
+                        marks = state.shots.map(toMark),
+                        onMark = { viewModel.tapTarget(toMm(it)) },
+                        onMoveMark = { index, mark ->
+                            state.shots.getOrNull(index)?.let { shot ->
+                                viewModel.beginMove(shot.id)
+                                viewModel.tapTarget(toMm(mark))
+                            }
+                        },
+                    )
+                } else {
+                    TargetView(
+                        spec = spec,
+                        layers = listOf(
+                            ShotLayer(
+                                label = "Detected",
+                                shots = state.shots,
+                                colour = ScoreColors.hit,
+                            ),
                         ),
-                    ),
-                    selectedShotId = state.selectedShotId,
-                    onTap = { tap ->
-                        when (tap) {
-                            is TargetTap.OnShot -> viewModel.selectShot(tap.shotId)
-                            is TargetTap.OnTarget -> viewModel.tapTarget(tap.positionMm)
-                        }
-                    },
-                )
+                        selectedShotId = state.selectedShotId,
+                        onTap = { tap ->
+                            when (tap) {
+                                is TargetTap.OnShot -> viewModel.selectShot(tap.shotId)
+                                is TargetTap.OnTarget -> viewModel.tapTarget(tap.positionMm)
+                            }
+                        },
+                    )
+                }
             }
 
             Text(

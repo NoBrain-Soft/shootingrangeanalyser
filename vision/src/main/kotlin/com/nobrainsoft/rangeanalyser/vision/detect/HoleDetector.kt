@@ -78,9 +78,17 @@ data class DetectionResult(
  *    enclosed ring into a disc whatever its size, and the printed rings are then rejected on area,
  *    since a scoring ring encloses thousands of times a bullet's worth of paper.
  *
- * 3. **Split blobs by area.** Touching holes form one region and a distance transform will not
- *    separate craters that genuinely overlap. The count comes from area and the positions are spaced
- *    along the blob's long axis - approximate, flagged as such, and correctable in review.
+ * 3. **Split a merged blob at the peaks of its distance transform.** A tight group is one region,
+ *    and the middle of each hole in it is a local maximum of distance-from-the-edge - which survives
+ *    its neighbours overlapping it. Reading those peaks back gives the holes in two dimensions and
+ *    gives their number as a side effect. Area decides only whether a blob holds more than one shot;
+ *    where they are is measured, not inferred, and the fallback for a blob with no clear peaks is
+ *    still to space them along its long axis.
+ *
+ * The filling and bridging steps are deliberately tight for the same reason. Generous versions of
+ * either weld a good group into a single mass: eleven shots in a club target came back as one,
+ * because the pockets between adjacent holes were being flooded and the whole group became one blob
+ * too wide to be a hole and too small to be printing.
  */
 object HoleDetector {
 
@@ -90,7 +98,7 @@ object HoleDetector {
     const val MIN_HOLE_DIAMETER_PX = 6.0
 
     /** Bridges noise-induced gaps in the torn ring without disturbing anything larger. */
-    private const val BRIDGE_KERNEL_FRACTION = 0.2
+    private const val BRIDGE_KERNEL_FRACTION = 0.12
 
     /** Anything narrower than this fraction of a hole is printing, not a shot. */
     private const val THIN_STRUCTURE_FRACTION = 0.45
@@ -128,7 +136,7 @@ object HoleDetector {
     private const val MAX_SHOTS_PER_BLOB = 8
 
     /** Largest enclosed region, in holes' worth of area, that is treated as a hole and filled in. */
-    private const val MAX_FILLED_SHOTS = 4.0
+    private const val MAX_FILLED_SHOTS = 2.0
 
     /**
      * A hole reads larger than its bullet, because the torn rim is part of what you see. Anything
@@ -150,6 +158,26 @@ object HoleDetector {
      */
     private const val MIN_BLOB_WIDTH_FACTOR = 0.4
     private const val MAX_BLOB_WIDTH_FACTOR = 2.2
+
+    /** Longest a blob may be, in hole diameters, before it is printing rather than a group. */
+    private const val MAX_BLOB_SPAN_FACTOR = 8.0
+
+    /**
+     * How much of its own bounding box a wide blob must fill to be a clump of holes.
+     *
+     * Discs packed together fill roughly three quarters of the box around them; an arc of a printed
+     * ring fills a third or less, because most of its box is the empty middle of the curve.
+     */
+    private const val MIN_CLUSTER_FILL = 0.55
+
+    /** Neighbourhood a pixel must dominate to count as the middle of a hole. */
+    private const val PEAK_NEIGHBOURHOOD_FRACTION = 0.5
+
+    /** How deep inside the blob a peak must be, as a fraction of one hole's diameter. */
+    private const val MIN_PEAK_DISTANCE_FRACTION = 0.22
+
+    /** Two peaks closer than this are the same hole found twice. */
+    private const val MIN_PEAK_SEPARATION_FRACTION = 0.7
 
     fun detect(
         rectified: RectifiedImage,
@@ -392,6 +420,8 @@ object HoleDetector {
         val axisAngleRad: Double,
         val extentMin: Double,
         val extentMax: Double,
+        /** The blob's boundary, copied out so its lifetime is not tied to the contour Mat. */
+        val outline: List<Point> = emptyList(),
     )
 
     /**
@@ -421,7 +451,7 @@ object HoleDetector {
                 contour.release()
                 continue
             }
-            if (!isHoleWidth(contour, expectedDiameterPx)) {
+            if (!isHoleShaped(contour, area, expectedDiameterPx)) {
                 contour.release()
                 continue
             }
@@ -462,15 +492,35 @@ object HoleDetector {
         return outer
     }
 
-    /** Whether the blob's short axis is consistent with holes made by this calibre. */
-    private fun isHoleWidth(contour: MatOfPoint, expectedDiameterPx: Double): Boolean {
+    /**
+     * Whether the blob's shape is consistent with holes made by this calibre.
+     *
+     * Width alone used to decide this, and it cost the shooter their group. A tight group merges
+     * into one blob that is several holes wide in *both* directions, and a ceiling on the short axis
+     * rejects it outright - so the closer someone shoots, the less the app finds, which is the exact
+     * opposite of useful. Eleven shots in a club target came back as one.
+     *
+     * What the ceiling was really for is printed line work: an arc of a scoring ring. That is thin
+     * and long, so it fails on the short axis or on solidity. A clump of holes is wide but *full* -
+     * it fills most of the box around it - and that is what separates the two.
+     */
+    private fun isHoleShaped(contour: MatOfPoint, area: Double, expectedDiameterPx: Double): Boolean {
         val points = MatOfPoint2f(*contour.toArray())
         val box = Imgproc.minAreaRect(points)
         points.release()
 
         val shortSide = min(box.size.width, box.size.height)
-        return shortSide >= expectedDiameterPx * MIN_BLOB_WIDTH_FACTOR &&
-            shortSide <= expectedDiameterPx * MAX_BLOB_WIDTH_FACTOR
+        val longSide = max(box.size.width, box.size.height)
+
+        // Thinner than this in any direction and it is printing, not a shot.
+        if (shortSide < expectedDiameterPx * MIN_BLOB_WIDTH_FACTOR) return false
+        // Longer than a plausible clump could ever be: a ring, or several welded to one.
+        if (longSide > expectedDiameterPx * MAX_BLOB_SPAN_FACTOR) return false
+        // One hole, or a short chain of them touching end to end.
+        if (shortSide <= expectedDiameterPx * MAX_BLOB_WIDTH_FACTOR) return true
+
+        val boxArea = shortSide * longSide
+        return boxArea > 0.0 && area / boxArea >= MIN_CLUSTER_FILL
     }
 
     /** Area over convex hull area. A fragment of ring line scores low; a hole scores near one. */
@@ -514,6 +564,7 @@ object HoleDetector {
             axisAngleRad = axisAngle,
             extentMin = minProjection,
             extentMax = maxProjection,
+            outline = contour.toArray().toList(),
         )
     }
 
@@ -534,13 +585,18 @@ object HoleDetector {
             1
         }
 
-        val centres = if (shots == 1) {
-            listOf(candidate.centroid)
-        } else {
-            spreadAlongAxis(candidate, shots)
+        // Peaks in the distance transform sit at the middle of each hole, wherever it is. Spreading
+        // along the long axis - the only option before - put a two-dimensional group in a straight
+        // line, which is wrong for the case that matters most: a tight group near the centre.
+        val peaks = if (shots > 1) peaksWithin(candidate, expectedDiameterPx) else emptyList()
+        val centres = when {
+            shots == 1 -> listOf(candidate.centroid)
+            peaks.size >= 2 -> peaks
+            else -> spreadAlongAxis(candidate, shots)
         }
+        val shotsFound = if (shots == 1) 1 else centres.size
 
-        val measuredDiameter = if (shots == 1) {
+        val measuredDiameter = if (shotsFound == 1) {
             2.0 * sqrt(candidate.enclosedArea / Math.PI)
         } else {
             expectedDiameterPx
@@ -549,7 +605,7 @@ object HoleDetector {
         val strength = residualStrength(residual, candidate.centroid, expectedDiameterPx / 2.0, threshold)
         val sizeMatch = sizeMatch(measuredDiameter, expectedDiameterPx)
         // Inferred positions claim less than measured ones.
-        val clusterPenalty = if (shots == 1) 1.0 else 0.6
+        val clusterPenalty = if (shotsFound == 1) 1.0 else 0.6
         val limitMm = (spec.outerRadiusMm ?: Double.MAX_VALUE) + marginMm
 
         return centres.mapNotNull { centre ->
@@ -563,7 +619,7 @@ object HoleDetector {
                     .coerceIn(0.0, 1.0),
                 pixelCentre = centre,
                 pixelRadius = measuredDiameter / 2.0,
-                shotsInBlob = shots,
+                shotsInBlob = shotsFound,
             )
         }
     }
@@ -581,6 +637,83 @@ object HoleDetector {
         if (error <= SIZE_TOLERANCE) return 1.0
         return (1.0 - (error - SIZE_TOLERANCE) / (1.0 - SIZE_TOLERANCE)).coerceIn(0.0, 1.0)
     }
+
+    /**
+     * Centres of the holes inside one blob, found as peaks in its distance transform.
+     *
+     * Every point inside a blob is scored by how far it is from the edge; the middle of each hole is
+     * a local maximum of that, and stays one even when its neighbour overlaps it. Reading the peaks
+     * back gives the holes where they actually are, in two dimensions, and gives their number as a
+     * side effect - which is better evidence than dividing the blob's area by one hole's.
+     *
+     * Returns an empty list when the blob has no interior worth transforming, leaving the caller to
+     * fall back on the area estimate.
+     */
+    internal fun peaksWithin(candidate: Candidate, expectedDiameterPx: Double): List<Point> {
+        if (candidate.outline.size < 3) return emptyList()
+
+        val pad = 2
+        val minX = candidate.outline.minOf { it.x }.toInt() - pad
+        val minY = candidate.outline.minOf { it.y }.toInt() - pad
+        val width = (candidate.outline.maxOf { it.x }.toInt() - minX) + pad + 1
+        val height = (candidate.outline.maxOf { it.y }.toInt() - minY) + pad + 1
+        if (width <= 0 || height <= 0) return emptyList()
+
+        val mask = Mat.zeros(height, width, CvType.CV_8U)
+        val shifted = MatOfPoint(
+            *candidate.outline.map { Point(it.x - minX, it.y - minY) }.toTypedArray(),
+        )
+        Imgproc.drawContours(mask, listOf(shifted), -1, Scalar(255.0), -1)
+        shifted.release()
+
+        val distance = Mat()
+        Imgproc.distanceTransform(mask, distance, Imgproc.DIST_L2, 3)
+        mask.release()
+
+        // A peak is a pixel no lower than anything nearby. Comparing against a dilation is the
+        // cheap way to ask that of every pixel at once.
+        val kernelSize = (expectedDiameterPx * PEAK_NEIGHBOURHOOD_FRACTION)
+            .toInt().coerceAtLeast(3).let { if (it % 2 == 0) it + 1 else it }
+        val kernel = Imgproc.getStructuringElement(
+            Imgproc.MORPH_ELLIPSE,
+            Size(kernelSize.toDouble(), kernelSize.toDouble()),
+        )
+        val dilated = Mat()
+        Imgproc.dilate(distance, dilated, kernel)
+        kernel.release()
+
+        val minimumDistance = expectedDiameterPx * MIN_PEAK_DISTANCE_FRACTION
+        val found = ArrayList<Triple<Double, Int, Int>>()
+        val distanceRow = FloatArray(width)
+        val dilatedRow = FloatArray(width)
+        for (y in 0 until height) {
+            distance.get(y, 0, distanceRow)
+            dilated.get(y, 0, dilatedRow)
+            for (x in 0 until width) {
+                val value = distanceRow[x].toDouble()
+                if (value >= minimumDistance && value >= dilatedRow[x] - 1e-4) {
+                    found += Triple(value, x, y)
+                }
+            }
+        }
+        distance.release()
+        dilated.release()
+
+        // A plateau produces a run of equal peaks; keep the strongest and drop anything within one
+        // hole's width of an accepted one.
+        val separation = expectedDiameterPx * MIN_PEAK_SEPARATION_FRACTION
+        val accepted = ArrayList<Point>()
+        for ((_, x, y) in found.sortedByDescending { it.first }) {
+            val point = Point((x + minX).toDouble(), (y + minY).toDouble())
+            if (accepted.none { hypotenuse(it, point) < separation }) accepted += point
+            if (accepted.size >= MAX_SHOTS_PER_BLOB) break
+        }
+        return accepted
+    }
+
+    private fun hypotenuse(a: Point, b: Point): Double = sqrt(
+        (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y),
+    )
 
     /** Places [count] centres evenly along a blob's long axis. */
     internal fun spreadAlongAxis(candidate: Candidate, count: Int): List<Point> {

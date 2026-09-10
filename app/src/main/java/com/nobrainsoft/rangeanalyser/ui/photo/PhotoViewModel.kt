@@ -37,6 +37,13 @@ data class PhotoState(
     val movingShotId: String? = null,
     val detection: DetectionResult? = null,
     val rectified: ImageBitmap? = null,
+    /**
+     * Where the rectified photograph's centre is, and its scale, so the review screen can put
+     * detections back onto the picture and turn a tap on it into millimetres.
+     */
+    val rectifiedPixelsPerMm: Double = 0.0,
+    val rectifiedCentreX: Double = 0.0,
+    val rectifiedCentreY: Double = 0.0,
     val busy: Boolean = false,
     val message: String? = null,
     val canUndo: Boolean = false,
@@ -126,8 +133,13 @@ class PhotoViewModel(
                     ?: return@withContext null
                 val result = HoleDetector.detect(rectified, face, caliber)
                 val preview = ImageBridge.toImageBitmap(rectified.image)
+                val geometry = Triple(
+                    rectified.pixelsPerMm,
+                    rectified.centre.x,
+                    rectified.centre.y,
+                )
                 rectified.release()
-                result to preview
+                Triple(result, preview, geometry)
             }
 
             if (outcome == null) {
@@ -139,7 +151,8 @@ class PhotoViewModel(
                 return@launch
             }
 
-            val (result, preview) = outcome
+            val (result, preview, geometry) = outcome
+            val (pixelsPerMm, centreX, centreY) = geometry
             // Ordering by position rather than by confidence: on a photograph there is no firing
             // order to preserve, and a stable left-to-right numbering is easier to check against
             // the paper in front of you.
@@ -161,6 +174,9 @@ class PhotoViewModel(
                 busy = false,
                 detection = result,
                 rectified = preview,
+                rectifiedPixelsPerMm = pixelsPerMm,
+                rectifiedCentreX = centreX,
+                rectifiedCentreY = centreY,
                 shots = shots,
                 message = summarise(result, shots.size),
             )
