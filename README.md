@@ -60,7 +60,7 @@ export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64   # or org.gradle.java.home 
 ```
 
 ```bash
-./gradlew :core:test :vision:test    # the analysis engine - 217 tests
+./gradlew :core:test :vision:test    # the analysis engine - 219 tests
 ./gradlew :app:assembleDebug         # the app; needs an Android SDK
 ./gradlew :app:installDebug          # build and push to a device over adb
 
@@ -83,7 +83,7 @@ spells this out at more length.
 
 ## Status and handover
 
-The analysis engine is complete and tested: **217 tests**, covering scoring against every ring
+The analysis engine is complete and tested: **219 tests**, covering scoring against every ring
 boundary, group statistics against hand-computed fixtures, flyer detection held to its nominal
 false-positive rate by Monte Carlo, ballistics validated against published velocity and
 time-of-flight figures, and detection run against synthetically rendered targets with perspective,

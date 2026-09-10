@@ -13,6 +13,7 @@ import com.nobrainsoft.rangeanalyser.vision.calibration.Rectifier
 import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertNotNull
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -120,6 +121,50 @@ class RealRangeTargetTest {
             found.holes.size >= shots.size / 2,
             "found only ${found.holes.size} of ${shots.size} shots against a mismatched face",
         )
+    }
+
+    @Test
+    fun `a face of the wrong size is reported as not looking like the photograph`() {
+        // Finding the shots is half of it. The shooter also has to be told when the calibration
+        // landed somewhere else entirely, because every number after it is measured against
+        // geometry that is not in the picture.
+        val wrong = detectAs(TargetLibrary.ISSF_PISTOL_25M)
+        val right = detectAs(clubFace)
+
+        println("AGREEMENT right=${right.targetAgreement} wrong=${wrong.targetAgreement}")
+        assertTrue(right.targetAgreement != null, "the correct face should be checkable")
+        assertFalse(right.targetLooksWrong, "the correct face scored ${right.targetAgreement}")
+        assertTrue(wrong.targetLooksWrong, "a 500 mm face over a 168 mm one scored ${wrong.targetAgreement}")
+    }
+
+    @Test
+    fun `a badly taken photograph of the right face still counts as a match`() {
+        // The threshold has to sit above a wrong face and below a real photograph taken at an
+        // angle, in poor light, slightly out of focus - which is most of them.
+        val render = SyntheticTarget.render(
+            clubFace,
+            SyntheticTarget.Config(
+                pixelsPerMm = 6.0,
+                holes = shots.map { SyntheticTarget.Hole(it, caliber.bulletDiameterMm) },
+                verticalTilt = 0.18,
+                horizontalTilt = 0.10,
+                rotationDeg = 6.0,
+                blurSigma = 1.6,
+                noiseSigma = 6.0,
+                vignette = 0.45,
+            ),
+        )
+        val rectified = assertNotNull(
+            Rectifier.rectify(render.image, render.imageToTargetMm, clubFace),
+        )
+        val found = HoleDetector.detect(rectified, clubFace, caliber)
+        println("AGREEMENT awkward=${found.targetAgreement}")
+        assertFalse(
+            found.targetLooksWrong,
+            "an awkward but correct photograph scored ${found.targetAgreement}",
+        )
+        rectified.release()
+        render.release()
     }
 
     // --- Fixture ----------------------------------------------------------------------------------

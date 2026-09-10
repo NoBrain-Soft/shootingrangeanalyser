@@ -106,7 +106,7 @@ fun PhotoScreen(
                     calibrationViewModel.begin(image, spec, caliber)
                 }
             }
-            if (image != null && profile.calibration == null) {
+            if (image != null && (profile.calibration == null || state.forceWizard)) {
                 CalibrationWizardScreen(
                     viewModel = calibrationViewModel,
                     spec = spec,
@@ -319,6 +319,28 @@ private fun ReviewStep(
                 .padding(horizontal = Dimens.gutter),
             verticalArrangement = Arrangement.spacedBy(Dimens.itemSpacing),
         ) {
+            if (state.calibrationSuspect) {
+                CautionBanner(
+                    "The rings the app expects are not where they are in this photograph, so the " +
+                        "calibration found something other than your target. Everything below is " +
+                        "measured against the wrong geometry.",
+                )
+                Button(
+                    onClick = viewModel::recalibrate,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = Dimens.touchTargetRange),
+                ) {
+                    Text("Calibrate again")
+                }
+            } else if (state.cannotVerify) {
+                CautionBanner(
+                    "This target records no aiming mark, so the app could not measure it from the " +
+                        "target's own printing and cannot check the calibration either. Adding the " +
+                        "black's diameter to the target makes both possible.",
+                )
+            }
+
             state.message?.let {
                 Text(
                     it,
